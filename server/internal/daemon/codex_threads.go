@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -245,6 +247,62 @@ func NewCodexThreadCatalogHandler(executable string) http.Handler {
 	return codexThreadsHandler(func(ctx context.Context) ([]CodexThreadSummary, error) {
 		return listCodexThreads(ctx, executable)
 	})
+}
+
+var codexThreadIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+func openCodexThread(ctx context.Context, target string) error {
+	var command *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		command = exec.CommandContext(ctx, "open", target)
+	case "windows":
+		command = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", target)
+	default:
+		command = exec.CommandContext(ctx, "xdg-open", target)
+	}
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("open Codex thread: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func codexOpenThreadHandler(open func(context.Context, string) error) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if !localCatalogOrigin(origin) {
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
+		}
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 128))
+		if err != nil {
+			http.Error(w, "invalid thread id", http.StatusBadRequest)
+			return
+		}
+		threadID := strings.TrimSpace(string(body))
+		if !codexThreadIDPattern.MatchString(threadID) {
+			http.Error(w, "invalid thread id", http.StatusBadRequest)
+			return
+		}
+		if err := open(r.Context(), "codex://threads/"+threadID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+// NewCodexOpenThreadHandler hands a validated local thread deep link to the OS.
+func NewCodexOpenThreadHandler() http.Handler {
+	return codexOpenThreadHandler(openCodexThread)
 }
 
 func (d *Daemon) codexThreadsHandler() http.Handler {

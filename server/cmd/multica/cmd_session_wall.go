@@ -34,6 +34,7 @@ var sessionWallServeCmd = &cobra.Command{
 
 		mux := http.NewServeMux()
 		mux.Handle("/codex/threads", daemon.NewCodexThreadCatalogHandler(resolved))
+		mux.Handle("/codex/open-thread", daemon.NewCodexOpenThreadHandler())
 		mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{

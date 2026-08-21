@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,42 @@ func TestDecodeCodexThreadListResult(t *testing.T) {
 	}
 	if got.Branch != "main" || got.RecencyAt != 30 || !got.Pinned {
 		t.Fatalf("thread metadata = %+v", got)
+	}
+}
+
+func TestCodexOpenThreadHandlerUsesFixedDeepLink(t *testing.T) {
+	var opened string
+	handler := codexOpenThreadHandler(func(_ context.Context, target string) error {
+		opened = target
+		return nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/codex/open-thread", strings.NewReader("019ed804-66d5-7361-b92a-996db5525f27"))
+	req.Header.Set("Origin", "http://127.0.0.1:3000")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if opened != "codex://threads/019ed804-66d5-7361-b92a-996db5525f27" {
+		t.Fatalf("opened = %q", opened)
+	}
+}
+
+func TestCodexOpenThreadHandlerRejectsInvalidID(t *testing.T) {
+	handler := codexOpenThreadHandler(func(context.Context, string) error {
+		t.Fatal("opener must not run")
+		return nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/codex/open-thread", strings.NewReader("https://example.com"))
+	req.Header.Set("Origin", "http://localhost:3000")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 

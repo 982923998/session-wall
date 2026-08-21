@@ -205,6 +205,7 @@ func (d *Daemon) serveHealth(ctx context.Context, ln net.Listener, startedAt tim
 	mux.HandleFunc("/shutdown", d.shutdownHandler())
 	mux.HandleFunc("/repo/checkout", d.repoCheckoutHandler())
 	mux.Handle("/codex/threads", d.codexThreadsHandler())
+	mux.Handle("/codex/open-thread", NewCodexOpenThreadHandler())
 
 	srv := &http.Server{Handler: mux}
 

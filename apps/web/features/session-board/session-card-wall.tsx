@@ -34,6 +34,7 @@ import {
 } from "./model";
 
 const THREAD_CATALOG_URL = "http://127.0.0.1:19514/codex/threads";
+const THREAD_OPEN_URL = "http://127.0.0.1:19514/codex/open-thread";
 
 function newId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
@@ -73,17 +74,23 @@ function SessionCard({
   agents,
   selectedAgentId,
   onMove,
+  onOpen,
 }: {
   thread: CodexThread;
   agents: BoardAgent[];
   selectedAgentId: string;
   onMove: (agentId: string) => void;
+  onOpen: () => void;
 }) {
   const title = thread.name || thread.preview || "未命名会话";
   return (
     <article className="group flex w-72 shrink-0 flex-col rounded-xl border border-surface-border bg-surface-raised p-3 shadow-xs transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-brand/45 hover:shadow-md">
       <a
         href={codexThreadUrl(thread.id)}
+        onClick={(event) => {
+          event.preventDefault();
+          onOpen();
+        }}
         className="flex items-start justify-between gap-3 outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
         title="在 Codex 中继续此会话"
       >
@@ -121,12 +128,14 @@ function AgentRow({
   allAgents,
   query,
   onMove,
+  onOpen,
 }: {
   agent: BoardAgent;
   threads: CodexThread[];
   allAgents: BoardAgent[];
   query: string;
   onMove: (threadId: string, agentId: string) => void;
+  onOpen: (thread: CodexThread) => void;
 }) {
   const visible = threads.filter((thread) => matchesSearch(thread, query));
   return (
@@ -147,6 +156,7 @@ function AgentRow({
               agents={allAgents}
               selectedAgentId={agent.id}
               onMove={(agentId) => onMove(thread.id, agentId)}
+              onOpen={() => onOpen(thread)}
             />
           ))
         ) : (
@@ -219,6 +229,20 @@ export function SessionCardWall() {
     if (!agentId) return;
     assignments[threadId] = { projectId: board.project.id, agentId };
     persist({ ...boardState, assignments });
+  }
+
+  async function openThread(thread: CodexThread) {
+    setError("");
+    try {
+      const response = await fetch(THREAD_OPEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=UTF-8" },
+        body: thread.id,
+      });
+      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
   }
 
   function openProjectEditor() {
@@ -331,6 +355,7 @@ export function SessionCardWall() {
               allAgents={board.project?.agents || []}
               query={deferredQuery}
               onMove={moveThread}
+              onOpen={(thread) => void openThread(thread)}
             />
           ))}
         </div>
