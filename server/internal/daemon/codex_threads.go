@@ -31,6 +31,8 @@ type CodexThreadSummary struct {
 	UpdatedAt int64  `json:"updated_at,omitempty"`
 	RecencyAt int64  `json:"recency_at,omitempty"`
 	Pinned    bool   `json:"pinned"`
+	AgentRole string `json:"agent_role,omitempty"`
+	AgentName string `json:"agent_nickname,omitempty"`
 }
 
 type codexThreadListResult struct {
@@ -43,6 +45,8 @@ type codexThreadListResult struct {
 		UpdatedAt int64  `json:"updatedAt"`
 		RecencyAt int64  `json:"recencyAt"`
 		IsPinned  bool   `json:"isPinned"`
+		AgentRole string `json:"agentRole"`
+		AgentName string `json:"agentNickname"`
 		Status    struct {
 			Type string `json:"type"`
 		} `json:"status"`
@@ -81,6 +85,8 @@ func decodeCodexThreadListResult(raw json.RawMessage) ([]CodexThreadSummary, err
 			UpdatedAt: thread.UpdatedAt,
 			RecencyAt: thread.RecencyAt,
 			Pinned:    thread.IsPinned,
+			AgentRole: thread.AgentRole,
+			AgentName: thread.AgentName,
 		})
 	}
 	return threads, nil

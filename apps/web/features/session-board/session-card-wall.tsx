@@ -6,8 +6,6 @@ import {
   ArrowUpRight,
   Bot,
   FolderKanban,
-  ListPlus,
-  Plus,
   RefreshCw,
   Search,
   Settings2,
@@ -28,6 +26,7 @@ import {
   DEFAULT_BOARD_STATE,
   buildProjectBoard,
   codexThreadUrl,
+  mergeDetectedProjects,
   normalizeBoardState,
   type BoardAgent,
   type BoardState,
@@ -106,7 +105,6 @@ function SessionCard({
         className="mt-3 h-7 w-full rounded-md border border-input bg-background px-2 text-caption text-muted-foreground outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
         aria-label={`移动会话 ${title}`}
       >
-        <option value="">移出项目</option>
         {agents.map((agent) => (
           <option key={agent.id} value={agent.id}>
             {agent.name}
@@ -169,14 +167,9 @@ export function SessionCardWall() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [sessionDialogOpen, setSessionDialogOpen] = useState(false);
-  const [sessionQuery, setSessionQuery] = useState("");
-  const [sessionAgentId, setSessionAgentId] = useState("");
-  const [editingNewProject, setEditingNewProject] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [draftAgents, setDraftAgents] = useState("");
   const deferredQuery = useDeferredValue(query.trim().toLocaleLowerCase());
-  const deferredSessionQuery = useDeferredValue(sessionQuery.trim().toLocaleLowerCase());
   const board = buildProjectBoard(threads, boardState, activeProjectId);
   const projectCardCount = board.rows.reduce((sum, row) => sum + row.threads.length, 0);
 
@@ -186,14 +179,18 @@ export function SessionCardWall() {
     localStorage.setItem(BOARD_STORAGE_KEY, JSON.stringify(normalized));
   }
 
-  async function refreshThreads() {
+  async function refreshThreads(stateOverride?: BoardState) {
     setLoading(true);
     setError("");
     try {
       const response = await fetch(THREAD_CATALOG_URL, { cache: "no-store" });
       if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
       const payload = (await response.json()) as { threads?: CodexThread[] };
-      setThreads(Array.isArray(payload.threads) ? payload.threads : []);
+      const nextThreads = Array.isArray(payload.threads) ? payload.threads : [];
+      const merged = mergeDetectedProjects(nextThreads, stateOverride || boardState);
+      setThreads(nextThreads);
+      persist(merged);
+      setActiveProjectId(merged.projects[0]?.id || "");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -202,58 +199,46 @@ export function SessionCardWall() {
   }
 
   useEffect(() => {
+    let initialState = DEFAULT_BOARD_STATE;
     const saved = localStorage.getItem(BOARD_STORAGE_KEY);
     if (saved) {
       try {
         const normalized = normalizeBoardState(JSON.parse(saved));
+        initialState = normalized;
         setBoardState(normalized);
-        setActiveProjectId(normalized.projects[0]?.id ?? "");
       } catch {
         localStorage.removeItem(BOARD_STORAGE_KEY);
       }
     }
-    void refreshThreads();
+    void refreshThreads(initialState);
   }, []);
 
   function moveThread(threadId: string, agentId: string) {
     if (!board.project) return;
     const assignments = { ...boardState.assignments };
-    if (agentId) assignments[threadId] = { projectId: board.project.id, agentId };
-    else delete assignments[threadId];
+    if (!agentId) return;
+    assignments[threadId] = { projectId: board.project.id, agentId };
     persist({ ...boardState, assignments });
   }
 
-  function openProjectEditor(newProject: boolean) {
-    setEditingNewProject(newProject);
-    setDraftName(newProject ? "" : board.project?.name || "");
-    setDraftAgents(newProject ? "" : board.project?.agents.map((agent) => agent.name).join("\n") || "");
+  function openProjectEditor() {
+    setDraftName(board.project?.name || "");
+    setDraftAgents(board.project?.agents.map((agent) => agent.name).join("\n") || "");
     setDialogOpen(true);
-  }
-
-  function openSessionPicker() {
-    setSessionQuery("");
-    setSessionAgentId(board.project?.agents[0]?.id || "");
-    setSessionDialogOpen(true);
-  }
-
-  function addSession(threadId: string) {
-    if (!board.project || !sessionAgentId) return;
-    moveThread(threadId, sessionAgentId);
   }
 
   function saveProject() {
     const name = draftName.trim();
     const names = draftAgents.split("\n").map((agent) => agent.trim()).filter(Boolean);
     if (!name || !names.length) return;
-    const existing = editingNewProject ? null : board.project;
+    const existing = board.project;
+    if (!existing) return;
     const agents = names.map((agentName) => {
       const old = existing?.agents.find((agent) => agent.name === agentName);
       return old || { id: newId("agent"), name: agentName };
     });
-    const project = { id: existing?.id || newId("project"), name, agents };
-    const projects = existing
-      ? boardState.projects.map((candidate) => (candidate.id === existing.id ? project : candidate))
-      : [...boardState.projects, project];
+    const project = { id: existing.id, name, agents };
+    const projects = boardState.projects.map((candidate) => (candidate.id === existing.id ? project : candidate));
     const validAgentIds = new Set(agents.map((agent) => agent.id));
     const assignments = Object.fromEntries(
       Object.entries(boardState.assignments).filter(([, assignment]) =>
@@ -277,12 +262,7 @@ export function SessionCardWall() {
             <div className="text-micro text-muted-foreground">Codex 会话索引</div>
           </div>
         </div>
-        <div className="mt-3 flex items-center justify-between px-2 text-micro font-medium uppercase tracking-wider text-muted-foreground">
-          <span>项目</span>
-          <Button variant="ghost" size="icon-xs" onClick={() => openProjectEditor(true)} title="新建项目">
-            <Plus />
-          </Button>
-        </div>
+        <div className="mt-3 px-2 text-micro font-medium uppercase tracking-wider text-muted-foreground">检测到的项目</div>
         <nav className="mt-1 space-y-1">
           {boardState.projects.map((project) => (
             <button
@@ -302,7 +282,7 @@ export function SessionCardWall() {
           ))}
         </nav>
         <div className="mt-auto rounded-lg border border-surface-border bg-surface-hover/45 p-3 text-caption leading-5 text-muted-foreground">
-          卡片只保存归类关系。完整对话始终保存在 Codex 中。
+          项目和会话由 Codex 工作目录自动识别。这里只保存 Agent 行归类。
         </div>
       </aside>
 
@@ -318,11 +298,8 @@ export function SessionCardWall() {
                 <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input value={query} onChange={(event) => setQuery(event.target.value)} className="pl-8" placeholder="搜索会话" />
               </div>
-              <Button variant="outline" onClick={() => openProjectEditor(false)} disabled={!board.project}>
+              <Button variant="outline" onClick={openProjectEditor} disabled={!board.project}>
                 <Settings2 /> 项目设置
-              </Button>
-              <Button variant="outline" onClick={openSessionPicker} disabled={!board.project}>
-                <ListPlus /> 添加会话
               </Button>
               <Button variant="brand" onClick={() => void refreshThreads()} disabled={loading}>
                 <RefreshCw className={cn(loading && "animate-spin")} /> 刷新会话
@@ -362,8 +339,8 @@ export function SessionCardWall() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{editingNewProject ? "新建项目卡片墙" : "项目与 Agent 行"}</DialogTitle>
-            <DialogDescription>每行填写一个 Agent。删除 Agent 行会将其中卡片移出项目。</DialogDescription>
+            <DialogTitle>项目名称与 Agent 行</DialogTitle>
+            <DialogDescription>项目目录由 Codex 自动识别。每行填写一个 Agent，未指定角色的会话默认进入第一行。</DialogDescription>
           </DialogHeader>
           <label className="space-y-1.5 text-caption font-medium">
             <span>项目名称</span>
@@ -385,56 +362,6 @@ export function SessionCardWall() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={sessionDialogOpen} onOpenChange={setSessionDialogOpen}>
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>从 Codex 添加会话</DialogTitle>
-            <DialogDescription>目录中的会话只有加入项目后，才会出现在卡片墙中。</DialogDescription>
-          </DialogHeader>
-          <div className="grid grid-cols-[1fr_200px] gap-2 max-sm:grid-cols-1">
-            <div className="relative">
-              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={sessionQuery}
-                onChange={(event) => setSessionQuery(event.target.value)}
-                className="pl-8"
-                placeholder="搜索 Codex 会话目录"
-              />
-            </div>
-            <select
-              value={sessionAgentId}
-              onChange={(event) => setSessionAgentId(event.target.value)}
-              className="h-8 rounded-lg border border-input bg-background px-2.5 text-body outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-              aria-label="目标 Agent 行"
-            >
-              {board.project?.agents.map((agent) => (
-                <option key={agent.id} value={agent.id}>{agent.name}</option>
-              ))}
-            </select>
-          </div>
-          <div className="max-h-[55vh] space-y-1 overflow-y-auto rounded-lg border border-surface-border p-1">
-            {board.availableThreads
-              .filter((thread) => matchesSearch(thread, deferredSessionQuery))
-              .map((thread) => (
-                <div key={thread.id} className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-surface-hover">
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-body font-medium">{thread.name || thread.preview || "未命名会话"}</div>
-                    <div className="mt-0.5 flex gap-2 text-micro text-muted-foreground">
-                      <span>{formatActivity(thread)}</span>
-                      <span className="truncate">{directoryName(thread.cwd)}</span>
-                    </div>
-                  </div>
-                  <Button size="sm" variant="brandSubtle" onClick={() => addSession(thread.id)} disabled={!sessionAgentId}>
-                    添加
-                  </Button>
-                </div>
-              ))}
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setSessionDialogOpen(false)}>关闭</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

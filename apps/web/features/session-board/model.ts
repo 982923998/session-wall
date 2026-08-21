@@ -9,6 +9,8 @@ export interface CodexThread {
   updated_at?: number;
   recency_at?: number;
   pinned?: boolean;
+  agent_role?: string;
+  agent_nickname?: string;
 }
 
 export interface BoardAgent {
@@ -36,28 +38,19 @@ export interface BoardState {
 export interface ProjectBoard {
   project: BoardProject | null;
   rows: Array<BoardAgent & { threads: CodexThread[] }>;
-  availableThreads: CodexThread[];
 }
 
 export const BOARD_STORAGE_KEY = "multica:codex-session-card-wall:v1";
 
-export const DEFAULT_BOARD_STATE: BoardState = {
-  version: 1,
-  projects: [
-    {
-      id: "multiecho-t2",
-      name: "Multiecho-T2",
-      agents: [
-        { id: "leader", name: "Leader Agent" },
-        { id: "methods", name: "Methods Agent" },
-        { id: "analysis", name: "Analysis Agent" },
-        { id: "writing", name: "Writing Agent" },
-        { id: "reviewer", name: "Reviewer Agent" },
-      ],
-    },
-  ],
-  assignments: {},
-};
+export const DEFAULT_AGENTS: BoardAgent[] = [
+  { id: "leader", name: "Leader Agent" },
+  { id: "methods", name: "Methods Agent" },
+  { id: "analysis", name: "Analysis Agent" },
+  { id: "writing", name: "Writing Agent" },
+  { id: "reviewer", name: "Reviewer Agent" },
+];
+
+export const DEFAULT_BOARD_STATE: BoardState = { version: 1, projects: [], assignments: {} };
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -104,28 +97,77 @@ function activity(thread: CodexThread): number {
   return thread.recency_at || thread.updated_at || thread.created_at || 0;
 }
 
+function projectName(cwd: string): string {
+  return cwd.split("/").filter(Boolean).at(-1) || cwd;
+}
+
+export function mergeDetectedProjects(sourceThreads: CodexThread[], sourceState: BoardState): BoardState {
+  const state = normalizeBoardState(sourceState);
+  const orderedThreads = [...sourceThreads].sort((left, right) => activity(right) - activity(left));
+  const detectedPaths = [...new Set(orderedThreads.map((thread) => text(thread.cwd)).filter(Boolean))];
+  const legacyProject = state.projects.length === 1 && state.projects[0]?.id === "multiecho-t2"
+    ? state.projects[0]
+    : null;
+  const projects = detectedPaths.map((cwd, index) => {
+    const existing = state.projects.find((project) => project.id === cwd);
+    const agents = existing?.agents.length
+      ? existing.agents
+      : index === 0 && legacyProject?.agents.length
+        ? legacyProject.agents
+        : structuredClone(DEFAULT_AGENTS);
+    return {
+      id: cwd,
+      name: existing?.name || (index === 0 ? legacyProject?.name : "") || projectName(cwd),
+      agents,
+    };
+  });
+  const firstProjectId = projects[0]?.id;
+  const assignments = Object.fromEntries(
+    Object.entries(state.assignments).map(([threadId, assignment]) => [
+      threadId,
+      assignment.projectId === "multiecho-t2" && firstProjectId
+        ? { ...assignment, projectId: firstProjectId }
+        : assignment,
+    ]),
+  );
+  return { version: 1, projects, assignments };
+}
+
+function rowForThread(thread: CodexThread, project: BoardProject, state: BoardState): string {
+  const assignment = state.assignments[thread.id];
+  if (assignment?.projectId === project.id && project.agents.some((agent) => agent.id === assignment.agentId)) {
+    return assignment.agentId;
+  }
+  const role = text(thread.agent_role || thread.agent_nickname).toLocaleLowerCase();
+  if (role) {
+    const matched = project.agents.find((agent) =>
+      agent.id.toLocaleLowerCase() === role || agent.name.toLocaleLowerCase() === role,
+    );
+    if (matched) return matched.id;
+  }
+  return project.agents[0]?.id || "";
+}
+
 export function buildProjectBoard(
   sourceThreads: CodexThread[],
   sourceState: BoardState,
   projectId?: string,
 ): ProjectBoard {
   const state = normalizeBoardState(sourceState);
-  const threads = [...sourceThreads].sort((left, right) => activity(right) - activity(left));
+  const threads = [...sourceThreads]
+    .filter((thread) => text(thread.cwd))
+    .sort((left, right) => activity(right) - activity(left));
   const project = state.projects.find((candidate) => candidate.id === projectId) ?? state.projects[0] ?? null;
   const rows = project
     ? project.agents.map((agent) => ({
         ...agent,
-        threads: threads.filter((thread) => {
-          const assignment = state.assignments[thread.id];
-          return assignment?.projectId === project.id && assignment.agentId === agent.id;
-        }),
+        threads: threads.filter((thread) => thread.cwd === project.id && rowForThread(thread, project, state) === agent.id),
       }))
     : [];
 
   return {
     project,
     rows,
-    availableThreads: threads.filter((thread) => !state.assignments[thread.id]),
   };
 }
 
