@@ -5,7 +5,6 @@ import {
   AlertCircle,
   ArrowUpRight,
   Bot,
-  Check,
   FolderKanban,
   MoreHorizontal,
   RefreshCw,
@@ -20,7 +19,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
 import {
@@ -77,16 +75,10 @@ function matchesSearch(thread: CodexThread, query: string): boolean {
 
 function SessionCard({
   thread,
-  agents,
-  selectedAgentId,
-  onMove,
   onOpen,
   onDelete,
 }: {
   thread: CodexThread;
-  agents: BoardAgent[];
-  selectedAgentId: string;
-  onMove: (agentId: string) => void;
   onOpen: () => void;
   onDelete: () => void;
 }) {
@@ -111,13 +103,6 @@ function SessionCard({
             <span className="sr-only">卡片操作</span>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-44">
-            {agents.map((agent) => (
-              <DropdownMenuItem key={agent.id} onClick={() => onMove(agent.id)}>
-                {agent.id === selectedAgentId ? <Check /> : <span className="size-4" />}
-                {agent.name}
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onClick={onDelete}>
               <Trash2 /> 删除卡片
             </DropdownMenuItem>
@@ -139,17 +124,13 @@ function SessionCard({
 function AgentRow({
   agent,
   threads,
-  allAgents,
   query,
-  onMove,
   onOpen,
   onDelete,
 }: {
   agent: BoardAgent;
   threads: CodexThread[];
-  allAgents: BoardAgent[];
   query: string;
-  onMove: (threadId: string, agentId: string) => void;
   onOpen: (thread: CodexThread) => void;
   onDelete: (threadId: string) => void;
 }) {
@@ -169,9 +150,6 @@ function AgentRow({
             <SessionCard
               key={thread.id}
               thread={thread}
-              agents={allAgents}
-              selectedAgentId={agent.id}
-              onMove={(agentId) => onMove(thread.id, agentId)}
               onOpen={() => onOpen(thread)}
               onDelete={() => onDelete(thread.id)}
             />
@@ -239,14 +217,6 @@ export function SessionCardWall() {
     }
     void refreshThreads(initialState);
   }, []);
-
-  function moveThread(threadId: string, agentId: string) {
-    if (!board.project) return;
-    const assignments = { ...boardState.assignments };
-    if (!agentId) return;
-    assignments[threadId] = { projectId: board.project.id, agentId };
-    persist({ ...boardState, assignments });
-  }
 
   function deleteCard(threadId: string) {
     if (!board.project) return;
@@ -381,9 +351,7 @@ export function SessionCardWall() {
               key={row.id}
               agent={row}
               threads={row.threads}
-              allAgents={board.project?.agents || []}
               query={deferredQuery}
-              onMove={moveThread}
               onOpen={(thread) => void openThread(thread)}
               onDelete={deleteCard}
             />
