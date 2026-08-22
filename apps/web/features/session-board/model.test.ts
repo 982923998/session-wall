@@ -51,6 +51,17 @@ describe("session board model", () => {
     expect(board.rows[0]?.threads.map((thread) => thread.id)).toEqual(["t1", "t2", "t3"]);
   });
 
+  it("omits locally deleted cards without deleting the Codex thread", () => {
+    const state = mergeDetectedProjects(threads, {
+      version: 1,
+      projects: [],
+      assignments: {},
+      hiddenThreads: { t2: "/projects/manuscript" },
+    });
+    const board = buildProjectBoard(threads, state, "/projects/manuscript");
+    expect(board.rows.flatMap((row) => row.threads).map((thread) => thread.id)).toEqual(["t1", "t3"]);
+  });
+
   it("detects projects from conversation working directories", () => {
     const state = mergeDetectedProjects(threads, DEFAULT_BOARD_STATE);
     expect(state.projects.map((project) => [project.id, project.name])).toEqual([

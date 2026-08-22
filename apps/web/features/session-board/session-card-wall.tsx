@@ -5,13 +5,24 @@ import {
   AlertCircle,
   ArrowUpRight,
   Bot,
+  Check,
   FolderKanban,
+  MoreHorizontal,
   RefreshCw,
   Search,
   Settings2,
+  Trash2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@multica/ui/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -55,11 +66,6 @@ function formatActivity(thread: CodexThread): string {
   }).format(new Date(seconds * 1000));
 }
 
-function directoryName(cwd?: string): string {
-  if (!cwd) return "无工作目录";
-  return cwd.split("/").filter(Boolean).at(-1) || cwd;
-}
-
 function matchesSearch(thread: CodexThread, query: string): boolean {
   if (!query) return true;
   return [thread.name, thread.preview, thread.cwd, thread.branch]
@@ -75,49 +81,57 @@ function SessionCard({
   selectedAgentId,
   onMove,
   onOpen,
+  onDelete,
 }: {
   thread: CodexThread;
   agents: BoardAgent[];
   selectedAgentId: string;
   onMove: (agentId: string) => void;
   onOpen: () => void;
+  onDelete: () => void;
 }) {
   const title = thread.name || thread.preview || "未命名会话";
   return (
-    <article className="group flex w-72 shrink-0 flex-col rounded-xl border border-surface-border bg-surface-raised p-3 shadow-xs transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-brand/45 hover:shadow-md">
-      <a
-        href={codexThreadUrl(thread.id)}
-        onClick={(event) => {
-          event.preventDefault();
-          onOpen();
-        }}
-        className="flex items-start justify-between gap-3 outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
-        title="在 Codex 中继续此会话"
-      >
-        <span className="line-clamp-2 text-body font-semibold text-foreground">{title}</span>
-        <ArrowUpRight className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-brand" />
-      </a>
-      <p className="mt-2 line-clamp-2 min-h-8 text-caption leading-4 text-muted-foreground">
-        {thread.preview || "点击卡片回到 Codex 原会话"}
-      </p>
-      <div className="mt-3 flex items-center gap-2 text-micro text-muted-foreground">
-        <span>{formatActivity(thread)}</span>
-        <span className="text-surface-border">/</span>
-        <span className="max-w-24 truncate">{directoryName(thread.cwd)}</span>
-        {thread.branch ? <span className="ml-auto max-w-24 truncate text-brand">{thread.branch}</span> : null}
+    <article className="group flex min-h-24 w-52 shrink-0 flex-col rounded-xl border border-surface-border bg-surface-raised p-3 shadow-xs transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-brand/45 hover:shadow-md">
+      <div className="flex items-start gap-1">
+        <a
+          href={codexThreadUrl(thread.id)}
+          onClick={(event) => {
+            event.preventDefault();
+            onOpen();
+          }}
+          className="min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
+          title="在 Codex 中继续此会话"
+        >
+          <span className="line-clamp-2 text-body font-semibold text-foreground">{title}</span>
+        </a>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="ghost" size="icon-xs" className="-mt-1 -mr-1 text-muted-foreground" />}>
+            <MoreHorizontal />
+            <span className="sr-only">卡片操作</span>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-44">
+            {agents.map((agent) => (
+              <DropdownMenuItem key={agent.id} onClick={() => onMove(agent.id)}>
+                {agent.id === selectedAgentId ? <Check /> : <span className="size-4" />}
+                {agent.name}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onClick={onDelete}>
+              <Trash2 /> 删除卡片
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
-      <select
-        value={selectedAgentId}
-        onChange={(event) => onMove(event.target.value)}
-        className="mt-3 h-7 w-full rounded-md border border-input bg-background px-2 text-caption text-muted-foreground outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-        aria-label={`移动会话 ${title}`}
+      <button
+        type="button"
+        onClick={onOpen}
+        className="mt-auto flex items-center justify-between pt-3 text-left text-micro text-muted-foreground"
       >
-        {agents.map((agent) => (
-          <option key={agent.id} value={agent.id}>
-            {agent.name}
-          </option>
-        ))}
-      </select>
+        <span>{formatActivity(thread)}</span>
+        <ArrowUpRight className="size-3.5 transition-colors group-hover:text-brand" />
+      </button>
     </article>
   );
 }
@@ -129,6 +143,7 @@ function AgentRow({
   query,
   onMove,
   onOpen,
+  onDelete,
 }: {
   agent: BoardAgent;
   threads: CodexThread[];
@@ -136,6 +151,7 @@ function AgentRow({
   query: string;
   onMove: (threadId: string, agentId: string) => void;
   onOpen: (thread: CodexThread) => void;
+  onDelete: (threadId: string) => void;
 }) {
   const visible = threads.filter((thread) => matchesSearch(thread, query));
   return (
@@ -157,6 +173,7 @@ function AgentRow({
               selectedAgentId={agent.id}
               onMove={(agentId) => onMove(thread.id, agentId)}
               onOpen={() => onOpen(thread)}
+              onDelete={() => onDelete(thread.id)}
             />
           ))
         ) : (
@@ -231,6 +248,18 @@ export function SessionCardWall() {
     persist({ ...boardState, assignments });
   }
 
+  function deleteCard(threadId: string) {
+    if (!board.project) return;
+    const previous = boardState;
+    persist({
+      ...boardState,
+      hiddenThreads: { ...boardState.hiddenThreads, [threadId]: board.project.id },
+    });
+    toast("卡片已从项目中删除", {
+      action: { label: "撤销", onClick: () => persist(previous) },
+    });
+  }
+
   async function openThread(thread: CodexThread) {
     setError("");
     try {
@@ -269,7 +298,7 @@ export function SessionCardWall() {
         assignment.projectId !== project.id || validAgentIds.has(assignment.agentId),
       ),
     );
-    persist({ version: 1, projects, assignments });
+    persist({ version: 1, projects, assignments, hiddenThreads: boardState.hiddenThreads });
     setActiveProjectId(project.id);
     setDialogOpen(false);
   }
@@ -356,6 +385,7 @@ export function SessionCardWall() {
               query={deferredQuery}
               onMove={moveThread}
               onOpen={(thread) => void openThread(thread)}
+              onDelete={deleteCard}
             />
           ))}
         </div>

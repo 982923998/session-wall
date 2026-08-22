@@ -33,6 +33,7 @@ export interface BoardState {
   version: 1;
   projects: BoardProject[];
   assignments: Record<string, ThreadAssignment>;
+  hiddenThreads: Record<string, string>;
 }
 
 export interface ProjectBoard {
@@ -50,7 +51,12 @@ export const DEFAULT_AGENTS: BoardAgent[] = [
   { id: "reviewer", name: "Reviewer Agent" },
 ];
 
-export const DEFAULT_BOARD_STATE: BoardState = { version: 1, projects: [], assignments: {} };
+export const DEFAULT_BOARD_STATE: BoardState = {
+  version: 1,
+  projects: [],
+  assignments: {},
+  hiddenThreads: {},
+};
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -86,10 +92,18 @@ export function normalizeBoardState(value: unknown): BoardState {
     }
   }
 
+  const hiddenThreads: Record<string, string> = {};
+  if (source.hiddenThreads && typeof source.hiddenThreads === "object") {
+    for (const [threadId, projectId] of Object.entries(source.hiddenThreads)) {
+      if (text(threadId) && text(projectId)) hiddenThreads[threadId] = text(projectId);
+    }
+  }
+
   return {
     version: 1,
     projects: projects.length ? projects : structuredClone(DEFAULT_BOARD_STATE.projects),
     assignments,
+    hiddenThreads,
   };
 }
 
@@ -130,7 +144,7 @@ export function mergeDetectedProjects(sourceThreads: CodexThread[], sourceState:
         : assignment,
     ]),
   );
-  return { version: 1, projects, assignments };
+  return { version: 1, projects, assignments, hiddenThreads: state.hiddenThreads };
 }
 
 function rowForThread(thread: CodexThread, project: BoardProject, state: BoardState): string {
@@ -161,7 +175,11 @@ export function buildProjectBoard(
   const rows = project
     ? project.agents.map((agent) => ({
         ...agent,
-        threads: threads.filter((thread) => thread.cwd === project.id && rowForThread(thread, project, state) === agent.id),
+        threads: threads.filter((thread) =>
+          thread.cwd === project.id &&
+          state.hiddenThreads[thread.id] !== project.id &&
+          rowForThread(thread, project, state) === agent.id,
+        ),
       }))
     : [];
 
