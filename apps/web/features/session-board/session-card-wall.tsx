@@ -5,7 +5,11 @@ import {
   AlertCircle,
   ArrowUpRight,
   Bot,
+  ChevronDown,
+  ChevronRight,
   FolderKanban,
+  Maximize2,
+  Minimize2,
   MoreHorizontal,
   RefreshCw,
   Search,
@@ -44,6 +48,7 @@ import {
 
 const THREAD_CATALOG_URL = "http://127.0.0.1:19514/codex/threads";
 const THREAD_OPEN_URL = "http://127.0.0.1:19514/codex/open-thread";
+const UNASSIGNED_ROW_ID = "unassigned";
 
 function newId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
@@ -73,19 +78,30 @@ function matchesSearch(thread: CodexThread, query: string): boolean {
     .includes(query);
 }
 
+function rowStateKey(projectId: string, rowId: string): string {
+  return `${projectId}::${rowId}`;
+}
+
 function SessionCard({
   thread,
+  collapsed,
+  onToggleCollapsed,
   onOpen,
   onDelete,
 }: {
   thread: CodexThread;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
   onOpen: () => void;
   onDelete: () => void;
 }) {
   const title = thread.name || thread.preview || "未命名会话";
   return (
-    <article className="group flex min-h-24 w-52 shrink-0 flex-col rounded-xl border border-surface-border bg-surface-raised p-3 shadow-xs transition-[border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-brand/45 hover:shadow-md">
-      <div className="flex items-start gap-1">
+    <article className={cn(
+      "group flex min-h-24 shrink-0 flex-col rounded-xl border border-surface-border bg-surface-raised shadow-xs transition-[width,border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-brand/45 hover:shadow-md",
+      collapsed ? "w-20 p-2" : "w-52 p-3",
+    )}>
+      <div className={cn("flex gap-1", collapsed ? "flex-col" : "items-start")}>
         <a
           href={codexThreadUrl(thread.id)}
           onClick={(event) => {
@@ -95,28 +111,45 @@ function SessionCard({
           className="min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
           title="在 Codex 中继续此会话"
         >
-          <span className="line-clamp-2 text-body font-semibold text-foreground">{title}</span>
+          <span className={cn(
+            "font-semibold text-foreground",
+            collapsed ? "line-clamp-3 break-all text-caption leading-4" : "line-clamp-2 text-body",
+          )}>{title}</span>
         </a>
-        <DropdownMenu>
-          <DropdownMenuTrigger render={<Button variant="ghost" size="icon-xs" className="-mt-1 -mr-1 text-muted-foreground" />}>
-            <MoreHorizontal />
-            <span className="sr-only">卡片操作</span>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-44">
-            <DropdownMenuItem variant="destructive" onClick={onDelete}>
-              <Trash2 /> 删除卡片
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <div className={cn("flex shrink-0", collapsed && "justify-between")}>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="text-muted-foreground"
+            onClick={onToggleCollapsed}
+            title={collapsed ? "展开卡片" : "折叠卡片"}
+          >
+            {collapsed ? <Maximize2 /> : <Minimize2 />}
+            <span className="sr-only">{collapsed ? "展开卡片" : "折叠卡片"}</span>
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger render={<Button variant="ghost" size="icon-xs" className="text-muted-foreground" />}>
+              <MoreHorizontal />
+              <span className="sr-only">卡片操作</span>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-44">
+              <DropdownMenuItem variant="destructive" onClick={onDelete}>
+                <Trash2 /> 删除卡片
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
-      <button
-        type="button"
-        onClick={onOpen}
-        className="mt-auto flex items-center justify-between pt-3 text-left text-micro text-muted-foreground"
-      >
-        <span>{formatActivity(thread)}</span>
-        <ArrowUpRight className="size-3.5 transition-colors group-hover:text-brand" />
-      </button>
+      {!collapsed ? (
+        <button
+          type="button"
+          onClick={onOpen}
+          className="mt-auto flex items-center justify-between pt-3 text-left text-micro text-muted-foreground"
+        >
+          <span>{formatActivity(thread)}</span>
+          <ArrowUpRight className="size-3.5 transition-colors group-hover:text-brand" />
+        </button>
+      ) : null}
     </article>
   );
 }
@@ -125,20 +158,48 @@ function AgentRow({
   agent,
   threads,
   query,
+  collapsed,
+  collapsedThreads,
+  onToggleCollapsed,
+  onToggleThread,
   onOpen,
   onDelete,
 }: {
   agent: BoardAgent;
   threads: CodexThread[];
   query: string;
+  collapsed: boolean;
+  collapsedThreads: Record<string, string>;
+  onToggleCollapsed: () => void;
+  onToggleThread: (threadId: string) => void;
   onOpen: (thread: CodexThread) => void;
   onDelete: (threadId: string) => void;
 }) {
   const visible = threads.filter((thread) => matchesSearch(thread, query));
+  if (collapsed) {
+    return (
+      <section className="overflow-hidden rounded-xl border border-surface-border bg-surface-raised/80 shadow-xs">
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-hover/60"
+        >
+          <ChevronRight className="size-4 text-muted-foreground" />
+          <Bot className="size-4 text-brand" />
+          <span className="text-body font-semibold">{agent.name}</span>
+          <span className="ml-auto text-caption text-muted-foreground">{visible.length} 张会话卡片</span>
+        </button>
+      </section>
+    );
+  }
   return (
     <section className="grid min-h-40 grid-cols-[184px_minmax(0,1fr)] overflow-hidden rounded-xl border border-surface-border bg-surface-raised/80 shadow-xs max-md:grid-cols-1">
       <header className="border-r border-surface-border bg-surface-hover/60 p-4 max-md:border-r-0 max-md:border-b">
         <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon-xs" className="-ml-1 text-muted-foreground" onClick={onToggleCollapsed} title="折叠整行">
+            <ChevronDown />
+            <span className="sr-only">折叠 {agent.name}</span>
+          </Button>
           <Bot className="size-4 text-brand" />
           <h2 className="text-body font-semibold">{agent.name}</h2>
         </div>
@@ -150,6 +211,8 @@ function AgentRow({
             <SessionCard
               key={thread.id}
               thread={thread}
+              collapsed={Boolean(collapsedThreads[thread.id])}
+              onToggleCollapsed={() => onToggleThread(thread.id)}
               onOpen={() => onOpen(thread)}
               onDelete={() => onDelete(thread.id)}
             />
@@ -160,6 +223,107 @@ function AgentRow({
           </div>
         )}
       </div>
+    </section>
+  );
+}
+
+function UnassignedThreadRow({
+  thread,
+  collapsed,
+  onToggleCollapsed,
+  onOpen,
+  onDelete,
+}: {
+  thread: CodexThread;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  onOpen: () => void;
+  onDelete: () => void;
+}) {
+  const title = thread.name || thread.preview || "未命名会话";
+  return (
+    <div className={cn(
+      "flex items-center gap-2 border-b border-surface-border/70 px-3 last:border-b-0",
+      collapsed ? "py-1.5" : "py-2.5",
+    )}>
+      <Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground" onClick={onToggleCollapsed} title={collapsed ? "展开会话" : "折叠会话"}>
+        {collapsed ? <ChevronRight /> : <ChevronDown />}
+        <span className="sr-only">{collapsed ? "展开会话" : "折叠会话"}</span>
+      </Button>
+      <button type="button" onClick={onOpen} className="min-w-0 flex-1 truncate text-left text-body font-medium hover:text-brand" title={title}>
+        {title}
+      </button>
+      {!collapsed ? <span className="shrink-0 text-micro text-muted-foreground">{formatActivity(thread)}</span> : null}
+      {!collapsed ? (
+        <Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground" onClick={onOpen} title="在 Codex 中打开">
+          <ArrowUpRight />
+          <span className="sr-only">打开会话</span>
+        </Button>
+      ) : null}
+      <DropdownMenu>
+        <DropdownMenuTrigger render={<Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground" />}>
+          <MoreHorizontal />
+          <span className="sr-only">会话操作</span>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-44">
+          <DropdownMenuItem variant="destructive" onClick={onDelete}>
+            <Trash2 /> 删除会话
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
+function UnassignedSection({
+  threads,
+  query,
+  collapsed,
+  collapsedThreads,
+  onToggleCollapsed,
+  onToggleThread,
+  onOpen,
+  onDelete,
+}: {
+  threads: CodexThread[];
+  query: string;
+  collapsed: boolean;
+  collapsedThreads: Record<string, string>;
+  onToggleCollapsed: () => void;
+  onToggleThread: (threadId: string) => void;
+  onOpen: (thread: CodexThread) => void;
+  onDelete: (threadId: string) => void;
+}) {
+  const visible = threads.filter((thread) => matchesSearch(thread, query));
+  return (
+    <section className="overflow-hidden rounded-xl border border-surface-border bg-surface-raised/80 shadow-xs">
+      <button
+        type="button"
+        onClick={onToggleCollapsed}
+        className="flex w-full items-center gap-3 bg-surface-hover/60 px-4 py-3 text-left transition-colors hover:bg-surface-hover"
+      >
+        {collapsed ? <ChevronRight className="size-4 text-muted-foreground" /> : <ChevronDown className="size-4 text-muted-foreground" />}
+        <span className="text-body font-semibold">无角色会话</span>
+        <span className="ml-auto text-caption text-muted-foreground">{visible.length} 个会话</span>
+      </button>
+      {!collapsed ? (
+        <div>
+          {visible.length ? visible.map((thread) => (
+            <UnassignedThreadRow
+              key={thread.id}
+              thread={thread}
+              collapsed={Boolean(collapsedThreads[thread.id])}
+              onToggleCollapsed={() => onToggleThread(thread.id)}
+              onOpen={() => onOpen(thread)}
+              onDelete={() => onDelete(thread.id)}
+            />
+          )) : (
+            <div className="px-4 py-6 text-center text-caption text-muted-foreground">
+              {query ? "没有匹配的无角色会话" : "暂无无角色会话"}
+            </div>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -176,7 +340,8 @@ export function SessionCardWall() {
   const [draftAgents, setDraftAgents] = useState("");
   const deferredQuery = useDeferredValue(query.trim().toLocaleLowerCase());
   const board = buildProjectBoard(threads, boardState, activeProjectId);
-  const projectCardCount = board.rows.reduce((sum, row) => sum + row.threads.length, 0);
+  const roleCardCount = board.rows.reduce((sum, row) => sum + row.threads.length, 0);
+  const projectSessionCount = roleCardCount + board.unassignedThreads.length;
 
   function persist(next: BoardState) {
     const normalized = normalizeBoardState(next);
@@ -218,16 +383,39 @@ export function SessionCardWall() {
     void refreshThreads(initialState);
   }, []);
 
-  function deleteCard(threadId: string) {
+  function hideSession(threadId: string) {
     if (!board.project) return;
     const previous = boardState;
     persist({
       ...boardState,
       hiddenThreads: { ...boardState.hiddenThreads, [threadId]: board.project.id },
     });
-    toast("卡片已从项目中删除", {
+    toast("会话已从项目看板隐藏", {
       action: { label: "撤销", onClick: () => persist(previous) },
     });
+  }
+
+  function toggleThreadCollapsed(threadId: string) {
+    if (!board.project) return;
+    const collapsedThreads = { ...boardState.collapsedThreads };
+    if (collapsedThreads[threadId] === board.project.id) {
+      delete collapsedThreads[threadId];
+    } else {
+      collapsedThreads[threadId] = board.project.id;
+    }
+    persist({ ...boardState, collapsedThreads });
+  }
+
+  function toggleRowCollapsed(rowId: string) {
+    if (!board.project) return;
+    const key = rowStateKey(board.project.id, rowId);
+    const collapsedRows = { ...boardState.collapsedRows };
+    if (collapsedRows[key]) {
+      delete collapsedRows[key];
+    } else {
+      collapsedRows[key] = true;
+    }
+    persist({ ...boardState, collapsedRows });
   }
 
   async function openThread(thread: CodexThread) {
@@ -268,7 +456,14 @@ export function SessionCardWall() {
         assignment.projectId !== project.id || validAgentIds.has(assignment.agentId),
       ),
     );
-    persist({ version: 1, projects, assignments, hiddenThreads: boardState.hiddenThreads });
+    persist({
+      version: 1,
+      projects,
+      assignments,
+      hiddenThreads: boardState.hiddenThreads,
+      collapsedThreads: boardState.collapsedThreads,
+      collapsedRows: boardState.collapsedRows,
+    });
     setActiveProjectId(project.id);
     setDialogOpen(false);
   }
@@ -305,7 +500,7 @@ export function SessionCardWall() {
           ))}
         </nav>
         <div className="mt-auto rounded-lg border border-surface-border bg-surface-hover/45 p-3 text-caption leading-5 text-muted-foreground">
-          项目和会话由 Codex 工作目录自动识别。这里只保存 Agent 行归类。
+          项目由 Codex 工作目录识别。会话标题中第一个 “-” 前的文字决定 Agent 行。
         </div>
       </aside>
 
@@ -330,7 +525,8 @@ export function SessionCardWall() {
             </div>
           </div>
           <div className="mt-3 flex gap-2 text-caption text-muted-foreground">
-            <span className="rounded-full bg-muted px-2 py-1">{projectCardCount} 张项目卡片</span>
+            <span className="rounded-full bg-muted px-2 py-1">{projectSessionCount} 个项目会话</span>
+            <span className="rounded-full bg-muted px-2 py-1">{roleCardCount} 张角色卡片</span>
             <span className="rounded-full bg-muted px-2 py-1">{board.rows.length} 个 Agent 行</span>
           </div>
         </header>
@@ -352,10 +548,24 @@ export function SessionCardWall() {
               agent={row}
               threads={row.threads}
               query={deferredQuery}
+              collapsed={Boolean(board.project && boardState.collapsedRows[rowStateKey(board.project.id, row.id)])}
+              collapsedThreads={boardState.collapsedThreads}
+              onToggleCollapsed={() => toggleRowCollapsed(row.id)}
+              onToggleThread={toggleThreadCollapsed}
               onOpen={(thread) => void openThread(thread)}
-              onDelete={deleteCard}
+              onDelete={hideSession}
             />
           ))}
+          <UnassignedSection
+            threads={board.unassignedThreads}
+            query={deferredQuery}
+            collapsed={Boolean(board.project && boardState.collapsedRows[rowStateKey(board.project.id, UNASSIGNED_ROW_ID)])}
+            collapsedThreads={boardState.collapsedThreads}
+            onToggleCollapsed={() => toggleRowCollapsed(UNASSIGNED_ROW_ID)}
+            onToggleThread={toggleThreadCollapsed}
+            onOpen={(thread) => void openThread(thread)}
+            onDelete={hideSession}
+          />
         </div>
       </main>
 
@@ -363,7 +573,7 @@ export function SessionCardWall() {
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>项目名称与 Agent 行</DialogTitle>
-            <DialogDescription>项目目录由 Codex 自动识别。每行填写一个 Agent，未指定角色的会话默认进入第一行。</DialogDescription>
+            <DialogDescription>项目目录由 Codex 自动识别。会话标题以 “角色-内容” 命名时，会自动进入对应 Agent 行；无法匹配的会话进入底部列表。</DialogDescription>
           </DialogHeader>
           <label className="space-y-1.5 text-caption font-medium">
             <span>项目名称</span>

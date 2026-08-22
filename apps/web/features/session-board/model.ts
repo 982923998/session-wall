@@ -34,11 +34,14 @@ export interface BoardState {
   projects: BoardProject[];
   assignments: Record<string, ThreadAssignment>;
   hiddenThreads: Record<string, string>;
+  collapsedThreads: Record<string, string>;
+  collapsedRows: Record<string, boolean>;
 }
 
 export interface ProjectBoard {
   project: BoardProject | null;
   rows: Array<BoardAgent & { threads: CodexThread[] }>;
+  unassignedThreads: CodexThread[];
 }
 
 export const BOARD_STORAGE_KEY = "multica:codex-session-card-wall:v1";
@@ -56,6 +59,8 @@ export const DEFAULT_BOARD_STATE: BoardState = {
   projects: [],
   assignments: {},
   hiddenThreads: {},
+  collapsedThreads: {},
+  collapsedRows: {},
 };
 
 function text(value: unknown): string {
@@ -99,11 +104,27 @@ export function normalizeBoardState(value: unknown): BoardState {
     }
   }
 
+  const collapsedThreads: Record<string, string> = {};
+  if (source.collapsedThreads && typeof source.collapsedThreads === "object") {
+    for (const [threadId, projectId] of Object.entries(source.collapsedThreads)) {
+      if (text(threadId) && text(projectId)) collapsedThreads[threadId] = text(projectId);
+    }
+  }
+
+  const collapsedRows: Record<string, boolean> = {};
+  if (source.collapsedRows && typeof source.collapsedRows === "object") {
+    for (const [rowId, collapsed] of Object.entries(source.collapsedRows)) {
+      if (text(rowId) && collapsed === true) collapsedRows[rowId] = true;
+    }
+  }
+
   return {
     version: 1,
     projects: projects.length ? projects : structuredClone(DEFAULT_BOARD_STATE.projects),
     assignments,
     hiddenThreads,
+    collapsedThreads,
+    collapsedRows,
   };
 }
 
@@ -144,22 +165,44 @@ export function mergeDetectedProjects(sourceThreads: CodexThread[], sourceState:
         : assignment,
     ]),
   );
-  return { version: 1, projects, assignments, hiddenThreads: state.hiddenThreads };
+  return {
+    version: 1,
+    projects,
+    assignments,
+    hiddenThreads: state.hiddenThreads,
+    collapsedThreads: state.collapsedThreads,
+    collapsedRows: state.collapsedRows,
+  };
 }
 
-function rowForThread(thread: CodexThread, project: BoardProject, state: BoardState): string {
-  const assignment = state.assignments[thread.id];
-  if (assignment?.projectId === project.id && project.agents.some((agent) => agent.id === assignment.agentId)) {
-    return assignment.agentId;
+function normalizeRole(value: string): string {
+  return value
+    .toLocaleLowerCase()
+    .replace(/\bagent\b/g, "")
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+}
+
+function roleAliases(agent: BoardAgent): Set<string> {
+  const aliases = new Set<string>();
+  for (const source of [agent.id, agent.name]) {
+    const normalized = normalizeRole(source);
+    if (!normalized) continue;
+    aliases.add(normalized);
+    if (normalized.endsWith("s") && !normalized.endsWith("is") && !normalized.endsWith("ss")) {
+      aliases.add(normalized.slice(0, -1));
+    }
   }
-  const role = text(thread.agent_role || thread.agent_nickname).toLocaleLowerCase();
-  if (role) {
-    const matched = project.agents.find((agent) =>
-      agent.id.toLocaleLowerCase() === role || agent.name.toLocaleLowerCase() === role,
-    );
-    if (matched) return matched.id;
-  }
-  return project.agents[0]?.id || "";
+  return aliases;
+}
+
+function rowForThread(thread: CodexThread, project: BoardProject): string {
+  const title = text(thread.name);
+  const separator = title.indexOf("-");
+  if (separator <= 0) return "";
+  const role = normalizeRole(title.slice(0, separator));
+  if (!role) return "";
+  return project.agents.find((agent) => roleAliases(agent).has(role))?.id || "";
 }
 
 export function buildProjectBoard(
@@ -172,20 +215,23 @@ export function buildProjectBoard(
     .filter((thread) => text(thread.cwd))
     .sort((left, right) => activity(right) - activity(left));
   const project = state.projects.find((candidate) => candidate.id === projectId) ?? state.projects[0] ?? null;
+  const projectThreads = project
+    ? threads.filter((thread) => thread.cwd === project.id && state.hiddenThreads[thread.id] !== project.id)
+    : [];
   const rows = project
     ? project.agents.map((agent) => ({
         ...agent,
-        threads: threads.filter((thread) =>
-          thread.cwd === project.id &&
-          state.hiddenThreads[thread.id] !== project.id &&
-          rowForThread(thread, project, state) === agent.id,
-        ),
+        threads: projectThreads.filter((thread) => rowForThread(thread, project) === agent.id),
       }))
+    : [];
+  const unassignedThreads = project
+    ? projectThreads.filter((thread) => !rowForThread(thread, project))
     : [];
 
   return {
     project,
     rows,
+    unassignedThreads,
   };
 }
 

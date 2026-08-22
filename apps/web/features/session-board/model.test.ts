@@ -10,9 +10,11 @@ import {
 } from "./model";
 
 const threads: CodexThread[] = [
-  { id: "t1", name: "方法 A", cwd: "/projects/manuscript", recency_at: 30 },
-  { id: "t2", name: "方法 B", cwd: "/projects/manuscript", recency_at: 20 },
-  { id: "t3", name: "写作", cwd: "/projects/manuscript", recency_at: 10 },
+  { id: "t1", name: "method-primary analysis", cwd: "/projects/manuscript", recency_at: 30 },
+  { id: "t2", name: "Methods-robustness check", cwd: "/projects/manuscript", recency_at: 20 },
+  { id: "t3", name: "writing-discussion revision", cwd: "/projects/manuscript", recency_at: 10 },
+  { id: "t5", name: "general project question", cwd: "/projects/manuscript", recency_at: 8 },
+  { id: "t6", name: "unknown-follow-up", cwd: "/projects/manuscript", recency_at: 7 },
   { id: "t4", name: "其他项目", cwd: "/projects/other", recency_at: 5 },
 ];
 
@@ -28,16 +30,8 @@ describe("session board model", () => {
     ]);
   });
 
-  it("groups cards by agent and sorts by last activity", () => {
-    const state = mergeDetectedProjects(threads, normalizeBoardState({
-      version: 1,
-      projects: [],
-      assignments: {
-        t1: { projectId: "/projects/manuscript", agentId: "methods" },
-        t2: { projectId: "/projects/manuscript", agentId: "methods" },
-        t3: { projectId: "/projects/manuscript", agentId: "writing" },
-      },
-    }));
+  it("groups cards by the title prefix and accepts singular role aliases", () => {
+    const state = mergeDetectedProjects(threads, DEFAULT_BOARD_STATE);
     const board = buildProjectBoard(threads, state, "/projects/manuscript");
 
     expect(board.rows.find((row) => row.id === "methods")?.threads.map((thread) => thread.id)).toEqual(["t1", "t2"]);
@@ -45,10 +39,21 @@ describe("session board model", () => {
     expect(board.rows.flatMap((row) => row.threads).map((thread) => thread.id)).not.toContain("t4");
   });
 
-  it("puts project sessions without role metadata in the first agent row", () => {
+  it("puts sessions without a recognized title role in the unassigned list", () => {
     const state = mergeDetectedProjects(threads, DEFAULT_BOARD_STATE);
     const board = buildProjectBoard(threads, state, "/projects/manuscript");
-    expect(board.rows[0]?.threads.map((thread) => thread.id)).toEqual(["t1", "t2", "t3"]);
+    expect(board.rows.find((row) => row.id === "leader")?.threads).toEqual([]);
+    expect(board.unassignedThreads.map((thread) => thread.id)).toEqual(["t5", "t6"]);
+  });
+
+  it("uses the title prefix instead of legacy manual assignments", () => {
+    const state = mergeDetectedProjects(threads, normalizeBoardState({
+      version: 1,
+      projects: [],
+      assignments: { t3: { projectId: "/projects/manuscript", agentId: "methods" } },
+    }));
+    const board = buildProjectBoard(threads, state, "/projects/manuscript");
+    expect(board.rows.find((row) => row.id === "writing")?.threads.map((thread) => thread.id)).toEqual(["t3"]);
   });
 
   it("omits locally deleted cards without deleting the Codex thread", () => {
@@ -56,10 +61,28 @@ describe("session board model", () => {
       version: 1,
       projects: [],
       assignments: {},
-      hiddenThreads: { t2: "/projects/manuscript" },
+      hiddenThreads: { t2: "/projects/manuscript", t5: "/projects/manuscript" },
     });
     const board = buildProjectBoard(threads, state, "/projects/manuscript");
     expect(board.rows.flatMap((row) => row.threads).map((thread) => thread.id)).toEqual(["t1", "t3"]);
+    expect(board.unassignedThreads.map((thread) => thread.id)).toEqual(["t6"]);
+  });
+
+  it("normalizes persisted folding maps for old and new board state", () => {
+    const oldState = normalizeBoardState({ version: 1, projects: [], assignments: {}, hiddenThreads: {} });
+    expect(oldState.collapsedThreads).toEqual({});
+    expect(oldState.collapsedRows).toEqual({});
+
+    const foldedState = normalizeBoardState({
+      version: 1,
+      projects: [],
+      assignments: {},
+      hiddenThreads: {},
+      collapsedThreads: { t1: "/projects/manuscript" },
+      collapsedRows: { "/projects/manuscript::methods": true },
+    });
+    expect(foldedState.collapsedThreads).toEqual({ t1: "/projects/manuscript" });
+    expect(foldedState.collapsedRows).toEqual({ "/projects/manuscript::methods": true });
   });
 
   it("detects projects from conversation working directories", () => {
