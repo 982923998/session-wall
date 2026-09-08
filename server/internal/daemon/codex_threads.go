@@ -2360,7 +2360,7 @@ func codexSendMessageHandler(
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		if result.MessageID == "" || (result.State != "started" && result.State != "queued") || (result.State == "started" && result.TurnID == "") {
+		if result.MessageID == "" || !validNativeMessageState(result.State) || (result.State == "started" && result.TurnID == "") {
 			http.Error(w, "Codex did not confirm the message", http.StatusServiceUnavailable)
 			return
 		}
@@ -2370,12 +2370,34 @@ func codexSendMessageHandler(
 	})
 }
 
-// NewCodexSendMessageHandler owns web turns and their interrupt connection.
+// NewCodexSendMessageHandler delegates all message actions to the existing App.
+// It never resumes a task through an independent app-server.
 func NewCodexSendMessageHandler(executable string) http.Handler {
-	session := newCodexMessageSession(executable)
-	send := codexSendMessageHandler(session.sendMessage)
+	return nativeCodexMessageHandler(func(method string, params any) (json.RawMessage, error) {
+		return sharedDesktopCall(executable, method, params)
+	})
+}
+
+func validNativeMessageState(state string) bool {
+	switch state {
+	case "started", "queued", "submitted", "unknown", "failed", "completed", "interrupted":
+		return true
+	}
+	return false
+}
+
+func nativeCodexMessageHandler(call codexCall) http.Handler {
+	send := codexSendMessageHandler(func(_ context.Context, id, message string, options CodexMessageOptions) (CodexMessageResult, error) {
+		raw, err := call("sessionWall/send", map[string]any{"threadId": id, "message": message, "model": options.Model, "effort": options.ReasoningEffort, "interrupt": options.Interrupt})
+		var result CodexMessageResult
+		if err == nil {
+			err = json.Unmarshal(raw, &result)
+		}
+		return result, err
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("action") != "stop" {
+		action := r.URL.Query().Get("action")
+		if action != "stop" && action != "status" {
 			send.ServeHTTP(w, r)
 			return
 		}
@@ -2388,7 +2410,7 @@ func NewCodexSendMessageHandler(executable string) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 		}
-		if r.Method != http.MethodPost {
+		if (action == "stop" && r.Method != http.MethodPost) || (action == "status" && r.Method != http.MethodGet) {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -2397,10 +2419,27 @@ func NewCodexSendMessageHandler(executable string) http.Handler {
 			http.Error(w, "invalid thread id", http.StatusBadRequest)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-		if err := session.thread(id).executor.interrupt(ctx, id); err != nil {
+		method := "sessionWall/stop"
+		params := map[string]any{"threadId": id}
+		if action == "status" {
+			method = "sessionWall/messageStatus"
+			params["messageId"] = r.URL.Query().Get("message_id")
+		}
+		raw, err := call(method, params)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if action == "status" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(raw)
+			return
+		}
+		var result struct {
+			Stopped bool `json:"stopped"`
+		}
+		if json.Unmarshal(raw, &result) != nil || !result.Stopped {
+			http.Error(w, "当前客户端没有可停止的运行轮次", 409)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)

@@ -54,6 +54,7 @@ import {
 } from "@multica/ui/components/ui/dialog";
 import { MemoizedMarkdown } from "@multica/ui/markdown";
 import { cn } from "@multica/ui/lib/utils";
+import {parseNativeDelivery, nativeDeliveryText} from "./native-delivery";
 import {
   BOARD_STORAGE_KEY,
   DEFAULT_BOARD_STATE,
@@ -570,7 +571,7 @@ export function SessionCardWall() {
   const [messageDraft, setMessageDraft] = useState("");
   const [messageSending, setMessageSending] = useState(false);
   const [messageError, setMessageError] = useState("");
-  const [messageReceipt, setMessageReceipt] = useState<{threadId: string; turnId: string; messageId: string; text: string} | null>(null);
+  const [messageReceipt, setMessageReceipt] = useState<{threadId: string; turnId: string; messageId: string; text: string; state?: string; originalText?: string} | null>(null);
   const [messageStopping, setMessageStopping] = useState(false);
   const [restoringThreadId, setRestoringThreadId] = useState("");
   const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
@@ -609,7 +610,7 @@ export function SessionCardWall() {
     ...pendingUserMessages.filter((item) => !transcriptItemIDs.has(item.id)),
   ];
   const selectedModelDetails = codexModels.find((model) => model.id === selectedModel);
-  const modelItems = codexModels.map((model) => ({ value: model.id, label: model.name }));
+  const modelItems = [{value:"__native__",label:"沿用客户端设置"}, ...codexModels.map((model) => ({ value: model.id, label: model.name }))];
   const reasoningItems = (selectedModelDetails?.reasoning_efforts || []).map((effort) => ({
     value: effort.value,
     label: reasoningLabel(effort.value),
@@ -734,16 +735,45 @@ export function SessionCardWall() {
       setSelectedReasoningEffort("");
       return;
     }
-    if (initializedModelThreadRef.current === previewThread.id && codexModels.some((model) => model.id === selectedModel)) return;
+    if (initializedModelThreadRef.current === previewThread.id && (selectedModel === "__native__" || codexModels.some((model) => model.id === selectedModel))) return;
     initializedModelThreadRef.current = previewThread.id;
-    const model = codexModels.find((candidate) => candidate.id === previewThread.model) || codexModels[0];
-    setSelectedModel(model?.id || "");
-    setSelectedReasoningEffort(
-      model?.reasoning_efforts.some((effort) => effort.value === previewThread.reasoning_effort)
-        ? previewThread.reasoning_effort || ""
-        : model?.default_reasoning_effort || model?.reasoning_efforts[0]?.value || "",
-    );
+    setSelectedModel("__native__");
+    setSelectedReasoningEffort("");
   }, [previewThread, codexModels, selectedModel]);
+
+  useEffect(() => {
+    if (!messageReceipt || messageReceipt.threadId !== previewThread?.id) return;
+    const receipt = messageReceipt;
+    let cancelled = false;
+    let timer = 0;
+    async function poll() {
+      try {
+        const params = new URLSearchParams({action:"status", thread_id:receipt.threadId, message_id:receipt.messageId});
+        const response = await fetch(`${THREAD_SEND_URL}?${params}`, {cache:"no-store"});
+        if (!response.ok) throw new Error(await response.text());
+        const value = parseNativeDelivery(await response.json());
+        if (cancelled) return;
+        setMessageReceipt(current => current?.messageId === receipt.messageId ? {...current, state:value.state, turnId:value.turn_id || current.turnId, text:value.error || nativeDeliveryText(value.state)} : current);
+        if (value.native_message_id) {
+          setPendingUserMessages(current => current.map(item => item.id === receipt.messageId ? {...item,id:value.native_message_id!} : item));
+          setMessageDraft(current => current === receipt.originalText ? "" : current);
+        }
+        if (value.state === "started") {
+          if (threadsRef.current.some(thread => thread.id === receipt.threadId && thread.status !== "active")) {
+            const next = threadsRef.current.map(thread => thread.id === receipt.threadId ? {...thread,status:"active"} : thread);
+            threadsRef.current = next;
+            setThreads(next);
+            setPreviewThread(current => current?.id === receipt.threadId && current.status !== "active" ? {...current,status:"active"} : current);
+          }
+        }
+        if (!["completed","interrupted","failed","unknown"].includes(value.state)) timer = window.setTimeout(poll,1000);
+      } catch {
+        if (!cancelled) timer = window.setTimeout(poll,2000);
+      }
+    }
+    void poll();
+    return () => {cancelled=true;window.clearTimeout(timer);};
+  }, [messageReceipt?.messageId, previewThread?.id]);
 
   useEffect(() => {
     if (!previewThread) return;
@@ -872,25 +902,21 @@ export function SessionCardWall() {
   async function sendMessageToThread() {
     const thread = previewThread;
     const message = messageDraft.trim();
-    if (!thread || !message || messageSending) return;
+    if (!thread || !message || messageSending || (messageReceipt?.threadId === thread.id && ["submitted","unknown"].includes(messageReceipt.state || ""))) return;
     setMessageSending(true);
     setMessageError("");
     try {
       const params = new URLSearchParams({ thread_id: thread.id });
-      if (selectedModel) params.set("model", selectedModel);
-      if (selectedReasoningEffort) params.set("reasoning_effort", selectedReasoningEffort);
+      if (selectedModel && selectedModel !== "__native__") params.set("model", selectedModel);
+      if (selectedModel !== "__native__" && selectedReasoningEffort) params.set("reasoning_effort", selectedReasoningEffort);
       const response = await fetch(`${THREAD_SEND_URL}?${params.toString()}`, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=UTF-8" },
         body: message,
       });
       if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
-      const result = (await response.json()) as {
-        message_id?: string;
-        turn_id?: string;
-        state?: "started" | "queued";
-      };
-      if (!result.message_id || !["started", "queued"].includes(result.state || "")) {
+      const result = parseNativeDelivery(await response.json());
+      if (!result.message_id) {
         throw new Error("Codex 没有确认收到这条消息");
       }
       if (result.state === "started" && !result.turn_id) {
@@ -899,11 +925,11 @@ export function SessionCardWall() {
       const messageID = result.message_id;
       setPendingUserMessages((current) => [
         ...current,
-        { id: messageID, kind: "user", text: message },
+        { id: result.native_message_id || messageID, kind: "user", text: message },
       ]);
-      setMessageDraft("");
+      if (!["submitted","unknown","failed"].includes(result.state)) setMessageDraft("");
+      setMessageReceipt({threadId:thread.id,turnId:result.turn_id || "",messageId:messageID,state:result.state,originalText:message,text:result.error || nativeDeliveryText(result.state)});
       if (result.state === "started") {
-        setMessageReceipt({threadId: thread.id, turnId: result.turn_id!, messageId: messageID, text: "Codex 已接收并启动本轮，等待 AI 输出…"});
         const nextThread = { ...thread, status: "active" };
         const nextThreads = threadsRef.current.map((candidate) => candidate.id === thread.id ? nextThread : candidate);
         threadsRef.current = nextThreads;
@@ -911,7 +937,6 @@ export function SessionCardWall() {
         setPreviewThread(nextThread);
         toast.success("Codex 已收到消息并开始处理");
       } else if (result.state === "queued") {
-        setMessageReceipt({threadId:thread.id,turnId:"",messageId:messageID,text:"Codex 已确认排队，尚未开始处理"});
         toast("消息已排队，将在当前任务结束后处理");
       }
     } catch (cause) {
@@ -1219,6 +1244,7 @@ export function SessionCardWall() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent align="start">
+                      <SelectItem value="__native__">沿用客户端设置</SelectItem>
                       {codexModels.map((model) => (
                         <SelectItem key={model.id} value={model.id} title={model.description}>
                           {model.name}
@@ -1272,7 +1298,7 @@ export function SessionCardWall() {
               <Button
                 type="submit"
                 variant="brand"
-                disabled={!messageDraft.trim() || messageSending}
+                disabled={!messageDraft.trim() || messageSending || (messageReceipt?.threadId === previewThread?.id && ["submitted","unknown"].includes(messageReceipt?.state || ""))}
               >
                 {messageSending ? <Loader2 className="animate-spin" /> : <SendHorizontal />}
                 {messageSending ? "发送中" : "发送"}
@@ -1286,10 +1312,11 @@ export function SessionCardWall() {
               {transcriptError ? " 输出连接暂时中断，正在重试；当前处理状态尚未确认。" : ""}
             </p>
             {messageError ? <p className="mt-2 text-caption text-destructive">{messageError}</p> : null}
+            {messageReceipt?.threadId === previewThread?.id && messageReceipt?.state === "unknown" ? <Button type="button" variant="ghost" size="sm" onClick={() => {setMessageReceipt(null);setPendingUserMessages([]);}}>我已检查客户端，解除发送锁定</Button> : null}
             <p className="mt-2 text-micro text-muted-foreground">
               {previewStatus === "active"
                 ? "当前任务正在处理，新消息会加入队列。"
-                : "Enter 发送，Shift+Enter 换行；所选模型与推理程度用于下一轮。"}
+                : "Enter 发送，Shift+Enter 换行。默认沿用客户端；指定模型时会核对客户端设置，不会静默换模型。"}
             </p>
           </form>
 
