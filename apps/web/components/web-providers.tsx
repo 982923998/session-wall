@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { usePathname } from "next/navigation";
 import { CoreProvider } from "@multica/core/platform";
 import { createBrowserCookieLocaleAdapter } from "@multica/core/i18n/browser";
 import type { LocaleResources, SupportedLocale } from "@multica/core/i18n";
@@ -57,6 +58,7 @@ export function WebProviders({
   apiBaseUrl?: string;
   wsUrl?: string;
 }) {
+  const pathname = usePathname();
   const cookieAuth = !hasLegacyToken();
   // Stable identity reference so downstream effects keyed on it don't see a
   // new object on every parent render.
@@ -65,6 +67,10 @@ export function WebProviders({
     [],
   );
   const localeAdapter = useMemo(() => createBrowserCookieLocaleAdapter(), []);
+  if (pathname === "/session-board") {
+    return children;
+  }
+
   return (
     <CoreProvider
       apiBaseUrl={apiBaseUrl}

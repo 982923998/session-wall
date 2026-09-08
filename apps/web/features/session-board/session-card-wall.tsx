@@ -1,24 +1,43 @@
 "use client";
 
-import { useDeferredValue, useEffect, useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
+  ArchiveRestore,
   ArrowUpRight,
+  BadgeCheck,
   Bot,
+  Brain,
+  CircleCheck,
   ChevronDown,
   ChevronRight,
+  Clock3,
   FolderKanban,
+  Loader2,
   Maximize2,
+  MessageSquareText,
   Minimize2,
   MoreHorizontal,
+  Pin,
   RefreshCw,
   Search,
+  SendHorizontal,
   Settings2,
+  Terminal,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
+import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
+import { Textarea } from "@multica/ui/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@multica/ui/components/ui/select";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,22 +52,57 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
+import { MemoizedMarkdown } from "@multica/ui/markdown";
 import { cn } from "@multica/ui/lib/utils";
 import {
   BOARD_STORAGE_KEY,
   DEFAULT_BOARD_STATE,
   buildProjectBoard,
-  codexThreadUrl,
+  effectiveThreadStatus,
+  hasThreadStatusChange,
+  hasArchivedThread,
   mergeDetectedProjects,
   normalizeBoardState,
+  reconcileThreadReviews,
+  rememberCatalogThreads,
+  threadCardStatus,
+  threadDisplayStatus,
   type BoardAgent,
   type BoardState,
+  type CodexModel,
+  type CodexProject,
   type CodexThread,
+  type CodexThreadTranscript,
+  type CodexTranscriptItem,
+  type ThreadCardStatus,
+  type ThreadReviewState,
 } from "./model";
 
 const THREAD_CATALOG_URL = "http://127.0.0.1:19514/codex/threads";
+const THREAD_STATUS_URL = "http://127.0.0.1:19514/codex/thread-statuses";
+const THREAD_TRANSCRIPT_URL = "http://127.0.0.1:19514/codex/thread-transcript";
+const CODEX_MODELS_URL = "http://127.0.0.1:19514/codex/models";
+const THREAD_SEND_URL = "http://127.0.0.1:19514/codex/send-message";
 const THREAD_OPEN_URL = "http://127.0.0.1:19514/codex/open-thread";
+const THREAD_RESTORE_URL = "http://127.0.0.1:19514/codex/restore-thread";
+const THREAD_STATUS_POLL_MS = 5_000;
+const THREAD_TRANSCRIPT_POLL_MS = 500;
 const UNASSIGNED_ROW_ID = "unassigned";
+
+const REASONING_LABELS: Record<string, string> = {
+  none: "无",
+  minimal: "最低",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "超高",
+  max: "最大",
+  ultra: "Ultra",
+};
+
+function reasoningLabel(value: string): string {
+  return REASONING_LABELS[value] || value;
+}
 
 function newId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
@@ -82,41 +136,144 @@ function rowStateKey(projectId: string, rowId: string): string {
   return `${projectId}::${rowId}`;
 }
 
+function ThreadStatusBadge({
+  status,
+  compact,
+  inline = false,
+}: {
+  status: ThreadCardStatus;
+  compact: boolean;
+  inline?: boolean;
+}) {
+  if (!status) return null;
+  const active = status === "active";
+  const pending = status === "pending";
+  const reviewed = status === "reviewed";
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "gap-1 px-1.5",
+        !inline && "mt-2 self-start",
+        compact && "w-full px-1 text-micro",
+        active && "border-info/25 bg-info/10 text-info",
+        pending && "border-warning/30 bg-warning/10 text-warning",
+        reviewed && "border-success/25 bg-success/10 text-success",
+        status === "completed" && "border-surface-border bg-muted/60 text-muted-foreground",
+      )}
+    >
+      {active ? <Loader2 className="animate-spin" /> : pending ? <Clock3 /> : reviewed ? <BadgeCheck /> : <CircleCheck />}
+      {active ? "进行中" : pending ? "待审阅" : reviewed ? "已审阅" : "已完成"}
+    </Badge>
+  );
+}
+
+function TranscriptItem({ item }: { item: CodexTranscriptItem }) {
+  if (item.kind === "tool") {
+    return (
+      <details className="rounded-lg border border-surface-border bg-surface-hover/45 px-3 py-2 text-caption">
+        <summary className="flex cursor-pointer list-none items-center gap-2 text-muted-foreground">
+          <Terminal className="size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 truncate">{item.title || "工具调用"}</span>
+          {item.status ? <span className="shrink-0 text-micro">{item.status}</span> : null}
+        </summary>
+        {item.text ? (
+          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-background p-2 font-mono text-micro leading-5 text-muted-foreground">
+            {item.text}
+          </pre>
+        ) : null}
+      </details>
+    );
+  }
+  if (item.kind === "activity") {
+    return (
+      <details className="px-1 text-caption text-muted-foreground">
+        <summary className="flex cursor-pointer list-none items-center gap-2">
+          <Brain className="size-3.5" />
+          <span>{item.title || "处理过程"}</span>
+        </summary>
+        {item.text ? <div className="mt-1 whitespace-pre-wrap pl-5 text-micro">{item.text}</div> : null}
+      </details>
+    );
+  }
+  const user = item.kind === "user";
+  return (
+    <article className={cn("flex", user ? "justify-end" : "justify-start")}>
+      <div className={cn(
+        "max-w-[92%] rounded-xl border px-3 py-2 shadow-xs",
+        user
+          ? "border-brand/20 bg-brand/8"
+          : "border-surface-border bg-surface-raised",
+      )}>
+        <div className="mb-1 text-micro font-medium text-muted-foreground">
+          {user ? "你" : item.phase === "commentary" ? "Codex · 进度" : "Codex"}
+        </div>
+        <MemoizedMarkdown id={`${item.id}-${item.text?.length || 0}`} mode="minimal">
+          {item.text || ""}
+        </MemoizedMarkdown>
+      </div>
+    </article>
+  );
+}
+
 function SessionCard({
   thread,
   collapsed,
+  status,
   onToggleCollapsed,
+  onPreview,
   onOpen,
   onDelete,
+  onRestore,
+  restoring,
 }: {
   thread: CodexThread;
   collapsed: boolean;
+  status: ThreadCardStatus;
   onToggleCollapsed: () => void;
+  onPreview: () => void;
   onOpen: () => void;
   onDelete: () => void;
+  onRestore: () => void;
+  restoring: boolean;
 }) {
   const title = thread.name || thread.preview || "未命名会话";
+  const unavailable = Boolean(thread.unavailable);
   return (
-    <article className={cn(
-      "group flex min-h-24 shrink-0 flex-col rounded-xl border border-surface-border bg-surface-raised shadow-xs transition-[width,border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-brand/45 hover:shadow-md",
-      collapsed ? "w-20 p-2" : "w-52 p-3",
-    )}>
+    <article
+      onClick={(event) => {
+        if (!unavailable && !(event.target as HTMLElement).closest("button,a")) onPreview();
+      }}
+      className={cn(
+        "group flex min-h-24 shrink-0 cursor-pointer flex-col rounded-xl border border-surface-border bg-surface-raised shadow-xs transition-[width,border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-brand/45 hover:shadow-md",
+        collapsed ? "w-20 p-2" : "w-52 p-3",
+        status === "active" && "border-info/35",
+        unavailable && "cursor-default border-warning/35 bg-warning/5 hover:border-warning/55",
+      )}
+    >
       <div className={cn("flex gap-1", collapsed ? "flex-col" : "items-start")}>
-        <a
-          href={codexThreadUrl(thread.id)}
-          onClick={(event) => {
-            event.preventDefault();
-            onOpen();
-          }}
-          className="min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
-          title="在 Codex 中继续此会话"
+        <button
+          type="button"
+          onClick={onPreview}
+          disabled={unavailable}
+          className="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-brand/60"
+          title="查看会话内容"
         >
-          <span className={cn(
-            "font-semibold text-foreground",
-            collapsed ? "line-clamp-3 break-all text-caption leading-4" : "line-clamp-2 text-body",
-          )}>{title}</span>
-        </a>
+          <span className="flex items-start gap-1">
+            {thread.pinned ? <Pin className="mt-0.5 size-3.5 shrink-0 text-brand" aria-label="已置顶" /> : null}
+            <span className={cn(
+              "font-semibold text-foreground",
+              collapsed ? "line-clamp-3 break-all text-caption leading-4" : "line-clamp-2 text-body",
+            )}>{title}</span>
+          </span>
+        </button>
         <div className={cn("flex shrink-0", collapsed && "justify-between")}>
+          {!collapsed && !unavailable ? (
+            <Button variant="ghost" size="icon-xs" className="text-muted-foreground" onClick={onOpen} title="在 Codex 中打开">
+              <ArrowUpRight />
+              <span className="sr-only">在 Codex 中打开</span>
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="icon-xs"
@@ -140,14 +297,39 @@ function SessionCard({
           </DropdownMenu>
         </div>
       </div>
-      {!collapsed ? (
+      {unavailable ? (
+        <Badge
+          variant="outline"
+          className={cn(
+            "mt-2 gap-1 border-warning/35 bg-warning/10 px-1.5 text-warning",
+            collapsed && "w-full justify-center px-1 text-micro",
+          )}
+          title="该任务已不在 Codex 当前目录中，通常是被归档；原工作树若已清理，取消归档也不会重建文件。"
+        >
+          <ArchiveRestore />
+          {collapsed ? <span className="sr-only">任务已归档或不可用</span> : "已归档或不可用"}
+        </Badge>
+      ) : <ThreadStatusBadge status={status} compact={collapsed} />}
+      {unavailable ? (
+        <Button
+          variant="outline"
+          size={collapsed ? "icon-xs" : "sm"}
+          className={cn("mt-auto border-warning/35 text-warning hover:bg-warning/10", !collapsed && "w-full")}
+          onClick={onRestore}
+          disabled={restoring}
+          title="恢复 Codex 任务"
+        >
+          {restoring ? <Loader2 className="animate-spin" /> : <ArchiveRestore />}
+          {!collapsed ? (restoring ? "恢复中" : "恢复任务") : <span className="sr-only">恢复任务</span>}
+        </Button>
+      ) : !collapsed ? (
         <button
           type="button"
-          onClick={onOpen}
+          onClick={onPreview}
           className="mt-auto flex items-center justify-between pt-3 text-left text-micro text-muted-foreground"
         >
           <span>{formatActivity(thread)}</span>
-          <ArrowUpRight className="size-3.5 transition-colors group-hover:text-brand" />
+          <MessageSquareText className="size-3.5 transition-colors group-hover:text-brand" />
         </button>
       ) : null}
     </article>
@@ -160,20 +342,28 @@ function AgentRow({
   query,
   collapsed,
   collapsedThreads,
+  reviewStates,
   onToggleCollapsed,
   onToggleThread,
+  onPreview,
   onOpen,
   onDelete,
+  onRestore,
+  restoringThreadId,
 }: {
   agent: BoardAgent;
   threads: CodexThread[];
   query: string;
   collapsed: boolean;
   collapsedThreads: Record<string, string>;
+  reviewStates: Record<string, ThreadReviewState>;
   onToggleCollapsed: () => void;
   onToggleThread: (threadId: string) => void;
+  onPreview: (thread: CodexThread) => void;
   onOpen: (thread: CodexThread) => void;
   onDelete: (threadId: string) => void;
+  onRestore: (thread: CodexThread) => void;
+  restoringThreadId: string;
 }) {
   const visible = threads.filter((thread) => matchesSearch(thread, query));
   if (collapsed) {
@@ -212,9 +402,13 @@ function AgentRow({
               key={thread.id}
               thread={thread}
               collapsed={Boolean(collapsedThreads[thread.id])}
+              status={threadDisplayStatus(thread, reviewStates[thread.id])}
               onToggleCollapsed={() => onToggleThread(thread.id)}
+              onPreview={() => onPreview(thread)}
               onOpen={() => onOpen(thread)}
               onDelete={() => onDelete(thread.id)}
+              onRestore={() => onRestore(thread)}
+              restoring={restoringThreadId === thread.id}
             />
           ))
         ) : (
@@ -230,17 +424,26 @@ function AgentRow({
 function UnassignedThreadRow({
   thread,
   collapsed,
+  status,
   onToggleCollapsed,
+  onPreview,
   onOpen,
   onDelete,
+  onRestore,
+  restoring,
 }: {
   thread: CodexThread;
   collapsed: boolean;
+  status: ThreadCardStatus;
   onToggleCollapsed: () => void;
+  onPreview: () => void;
   onOpen: () => void;
   onDelete: () => void;
+  onRestore: () => void;
+  restoring: boolean;
 }) {
   const title = thread.name || thread.preview || "未命名会话";
+  const unavailable = Boolean(thread.unavailable);
   return (
     <div className={cn(
       "flex items-center gap-2 border-b border-surface-border/70 px-3 last:border-b-0",
@@ -250,11 +453,22 @@ function UnassignedThreadRow({
         {collapsed ? <ChevronRight /> : <ChevronDown />}
         <span className="sr-only">{collapsed ? "展开会话" : "折叠会话"}</span>
       </Button>
-      <button type="button" onClick={onOpen} className="min-w-0 flex-1 truncate text-left text-body font-medium hover:text-brand" title={title}>
+      {thread.pinned ? <Pin className="size-3.5 shrink-0 text-brand" aria-label="已置顶" /> : null}
+      <button type="button" onClick={onPreview} disabled={unavailable} className="min-w-0 flex-1 truncate text-left text-body font-medium hover:text-brand disabled:text-muted-foreground" title={title}>
         {title}
       </button>
+      {unavailable ? (
+        <Badge variant="outline" className="gap-1 border-warning/35 bg-warning/10 text-warning">
+          <ArchiveRestore /> 已归档或不可用
+        </Badge>
+      ) : <ThreadStatusBadge status={status} compact={false} inline />}
       {!collapsed ? <span className="shrink-0 text-micro text-muted-foreground">{formatActivity(thread)}</span> : null}
-      {!collapsed ? (
+      {unavailable ? (
+        <Button variant="outline" size="sm" className="shrink-0 border-warning/35 text-warning" onClick={onRestore} disabled={restoring}>
+          {restoring ? <Loader2 className="animate-spin" /> : <ArchiveRestore />}
+          {restoring ? "恢复中" : "恢复任务"}
+        </Button>
+      ) : !collapsed ? (
         <Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground" onClick={onOpen} title="在 Codex 中打开">
           <ArrowUpRight />
           <span className="sr-only">打开会话</span>
@@ -280,19 +494,27 @@ function UnassignedSection({
   query,
   collapsed,
   collapsedThreads,
+  reviewStates,
   onToggleCollapsed,
   onToggleThread,
+  onPreview,
   onOpen,
   onDelete,
+  onRestore,
+  restoringThreadId,
 }: {
   threads: CodexThread[];
   query: string;
   collapsed: boolean;
   collapsedThreads: Record<string, string>;
+  reviewStates: Record<string, ThreadReviewState>;
   onToggleCollapsed: () => void;
   onToggleThread: (threadId: string) => void;
+  onPreview: (thread: CodexThread) => void;
   onOpen: (thread: CodexThread) => void;
   onDelete: (threadId: string) => void;
+  onRestore: (thread: CodexThread) => void;
+  restoringThreadId: string;
 }) {
   const visible = threads.filter((thread) => matchesSearch(thread, query));
   return (
@@ -313,9 +535,13 @@ function UnassignedSection({
               key={thread.id}
               thread={thread}
               collapsed={Boolean(collapsedThreads[thread.id])}
+              status={threadDisplayStatus(thread, reviewStates[thread.id])}
               onToggleCollapsed={() => onToggleThread(thread.id)}
+              onPreview={() => onPreview(thread)}
               onOpen={() => onOpen(thread)}
               onDelete={() => onDelete(thread.id)}
+              onRestore={() => onRestore(thread)}
+              restoring={restoringThreadId === thread.id}
             />
           )) : (
             <div className="px-4 py-6 text-center text-caption text-muted-foreground">
@@ -330,11 +556,34 @@ function UnassignedSection({
 
 export function SessionCardWall() {
   const [boardState, setBoardState] = useState<BoardState>(DEFAULT_BOARD_STATE);
+  const boardStateRef = useRef<BoardState>(DEFAULT_BOARD_STATE);
   const [threads, setThreads] = useState<CodexThread[]>([]);
+  const threadsRef = useRef<CodexThread[]>([]);
   const [activeProjectId, setActiveProjectId] = useState(DEFAULT_BOARD_STATE.projects[0]?.id ?? "");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [previewThread, setPreviewThread] = useState<CodexThread | null>(null);
+  const [transcript, setTranscript] = useState<CodexThreadTranscript | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [transcriptError, setTranscriptError] = useState("");
+  const [messageDraft, setMessageDraft] = useState("");
+  const [messageSending, setMessageSending] = useState(false);
+  const [messageError, setMessageError] = useState("");
+  const [messageReceipt, setMessageReceipt] = useState<{threadId: string; turnId: string; messageId: string; text: string} | null>(null);
+  const [messageStopping, setMessageStopping] = useState(false);
+  const [restoringThreadId, setRestoringThreadId] = useState("");
+  const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState("");
+  const [selectedModel, setSelectedModel] = useState("");
+  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("");
+  const initializedModelThreadRef = useRef("");
+  const [pendingUserMessages, setPendingUserMessages] = useState<CodexTranscriptItem[]>([]);
+  const transcriptSignatureRef = useRef("");
+  const pendingMessageThreadRef = useRef("");
+  const transcriptScrollRef = useRef<HTMLDivElement>(null);
+  const followTranscriptRef = useRef(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [draftAgents, setDraftAgents] = useState("");
@@ -342,9 +591,33 @@ export function SessionCardWall() {
   const board = buildProjectBoard(threads, boardState, activeProjectId);
   const roleCardCount = board.rows.reduce((sum, row) => sum + row.threads.length, 0);
   const projectSessionCount = roleCardCount + board.unassignedThreads.length;
+  const previewCatalogThread = previewThread
+    ? threads.find((thread) => thread.id === previewThread.id) || previewThread
+    : null;
+  const previewStatus = previewCatalogThread
+    ? threadDisplayStatus(
+        {
+          ...previewCatalogThread,
+          status: effectiveThreadStatus(previewCatalogThread.status, transcript?.status),
+        },
+        boardState.threadReviews[previewCatalogThread.id],
+      )
+    : "";
+  const transcriptItemIDs = new Set((transcript?.items || []).flatMap((item) => [item.id, item.client_id].filter(Boolean)));
+  const displayedTranscriptItems = [
+    ...(transcript?.items || []),
+    ...pendingUserMessages.filter((item) => !transcriptItemIDs.has(item.id)),
+  ];
+  const selectedModelDetails = codexModels.find((model) => model.id === selectedModel);
+  const modelItems = codexModels.map((model) => ({ value: model.id, label: model.name }));
+  const reasoningItems = (selectedModelDetails?.reasoning_efforts || []).map((effort) => ({
+    value: effort.value,
+    label: reasoningLabel(effort.value),
+  }));
 
   function persist(next: BoardState) {
     const normalized = normalizeBoardState(next);
+    boardStateRef.current = normalized;
     setBoardState(normalized);
     localStorage.setItem(BOARD_STORAGE_KEY, JSON.stringify(normalized));
   }
@@ -355,16 +628,73 @@ export function SessionCardWall() {
     try {
       const response = await fetch(THREAD_CATALOG_URL, { cache: "no-store" });
       if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
-      const payload = (await response.json()) as { threads?: CodexThread[] };
+      const payload = (await response.json()) as {
+        threads?: CodexThread[];
+        archived_threads?: CodexThread[];
+        projects?: CodexProject[];
+      };
       const nextThreads = Array.isArray(payload.threads) ? payload.threads : [];
-      const merged = mergeDetectedProjects(nextThreads, stateOverride || boardState);
+      const archivedThreads = Array.isArray(payload.archived_threads) ? payload.archived_threads : [];
+      const nextProjects = Array.isArray(payload.projects) ? payload.projects : [];
+      const remembered = rememberCatalogThreads(
+        [...nextThreads, ...archivedThreads],
+        stateOverride || boardStateRef.current,
+      );
+      const reconciled = reconcileThreadReviews(nextThreads, remembered);
+      const merged = mergeDetectedProjects(nextThreads, reconciled, nextProjects);
+      threadsRef.current = nextThreads;
       setThreads(nextThreads);
       persist(merged);
-      setActiveProjectId(merged.projects[0]?.id || "");
+      setActiveProjectId((currentProjectId) =>
+        merged.projects.some((project) => project.id === currentProjectId)
+          ? currentProjectId
+          : merged.projects[0]?.id || "",
+      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function refreshThreadStatuses() {
+    try {
+      const params = new URLSearchParams();
+      for (const thread of threadsRef.current) params.append("thread_id", thread.id);
+      const query = params.toString();
+      const statusURL = query ? `${THREAD_STATUS_URL}?${query}` : THREAD_STATUS_URL;
+      const response = await fetch(statusURL, { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = (await response.json()) as {
+        statuses?: Record<string, string>;
+        archived_thread_ids?: string[];
+      };
+      const statuses = payload.statuses;
+      if (!statuses || typeof statuses !== "object") return;
+      const archivedThreadIDs = Array.isArray(payload.archived_thread_ids)
+        ? payload.archived_thread_ids
+        : [];
+      if (
+        hasThreadStatusChange(threadsRef.current, statuses)
+        || hasArchivedThread(threadsRef.current, archivedThreadIDs)
+      ) await refreshThreads();
+    } catch {
+      // The catalog remains usable when the optional live status probe is unavailable.
+    }
+  }
+
+  async function loadCodexModels() {
+    setModelsLoading(true);
+    try {
+      const response = await fetch(CODEX_MODELS_URL, { cache: "no-store" });
+      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+      const payload = (await response.json()) as { models?: CodexModel[] };
+      setCodexModels(Array.isArray(payload.models) ? payload.models : []);
+      setModelsError("");
+    } catch (cause) {
+      setModelsError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setModelsLoading(false);
     }
   }
 
@@ -375,13 +705,116 @@ export function SessionCardWall() {
       try {
         const normalized = normalizeBoardState(JSON.parse(saved));
         initialState = normalized;
+        boardStateRef.current = normalized;
         setBoardState(normalized);
       } catch {
         localStorage.removeItem(BOARD_STORAGE_KEY);
       }
     }
     void refreshThreads(initialState);
+    void refreshThreadStatuses();
+    void loadCodexModels();
+    const statusTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshThreadStatuses();
+    }, THREAD_STATUS_POLL_MS);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") void refreshThreadStatuses();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearInterval(statusTimer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!previewThread || codexModels.length === 0) {
+      initializedModelThreadRef.current = "";
+      setSelectedModel("");
+      setSelectedReasoningEffort("");
+      return;
+    }
+    if (initializedModelThreadRef.current === previewThread.id && codexModels.some((model) => model.id === selectedModel)) return;
+    initializedModelThreadRef.current = previewThread.id;
+    const model = codexModels.find((candidate) => candidate.id === previewThread.model) || codexModels[0];
+    setSelectedModel(model?.id || "");
+    setSelectedReasoningEffort(
+      model?.reasoning_efforts.some((effort) => effort.value === previewThread.reasoning_effort)
+        ? previewThread.reasoning_effort || ""
+        : model?.default_reasoning_effort || model?.reasoning_efforts[0]?.value || "",
+    );
+  }, [previewThread, codexModels, selectedModel]);
+
+  useEffect(() => {
+    if (!previewThread) return;
+    const thread = previewThread;
+    if (pendingMessageThreadRef.current !== thread.id) {
+      pendingMessageThreadRef.current = thread.id;
+      setPendingUserMessages([]);
+    }
+    let cancelled = false;
+    let timer = 0;
+    transcriptSignatureRef.current = "";
+    followTranscriptRef.current = true;
+    setTranscript(null);
+    setTranscriptError("");
+    setMessageError("");
+    setTranscriptLoading(true);
+
+    async function loadTranscript() {
+      try {
+        const response = await fetch(`${THREAD_TRANSCRIPT_URL}?thread_id=${encodeURIComponent(thread.id)}`, {
+          cache: "no-store",
+        });
+        if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+        const payload = (await response.json()) as CodexThreadTranscript;
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        const next = { ...payload, items };
+        const last = items.at(-1);
+        const signature = `${next.status || ""}:${items.length}:${last?.id || ""}:${last?.text?.length || 0}:${last?.status || ""}`;
+        if (!cancelled && signature !== transcriptSignatureRef.current) {
+          transcriptSignatureRef.current = signature;
+          setTranscript(next);
+          const persistedIDs = new Set(items.flatMap((item) => [item.id, item.client_id].filter(Boolean)));
+          setPendingUserMessages((current) => current.filter((item) => !persistedIDs.has(item.id)));
+        }
+        if (!cancelled) {
+          setMessageReceipt((receipt) => {
+            if (!receipt || receipt.threadId !== thread.id || receipt.turnId !== next.turn_id) return receipt;
+            const status = next.status;
+            const text = status === "completed" ? "本条消息已处理完成"
+              : status === "interrupted" ? "本轮已停止"
+              : status === "failed" ? "本轮处理失败，请查看输出"
+              : "AI 正在处理，输出持续更新中";
+            return receipt.text === text ? receipt : {...receipt, text};
+          });
+          setTranscriptError("");
+          setTranscriptLoading(false);
+          timer = window.setTimeout(loadTranscript, threadCardStatus(next.status) === "active" ? THREAD_TRANSCRIPT_POLL_MS : 2000);
+        }
+      } catch (cause) {
+        if (cancelled) return;
+        setTranscriptLoading(false);
+        setTranscriptError(cause instanceof Error ? cause.message : String(cause));
+        timer = window.setTimeout(loadTranscript, 2000);
+      }
+    }
+
+    void loadTranscript();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [previewThread]);
+
+  useEffect(() => {
+    if (!transcript || !followTranscriptRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const element = transcriptScrollRef.current;
+      if (element) element.scrollTop = element.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [transcript]);
 
   function hideSession(threadId: string) {
     if (!board.project) return;
@@ -418,6 +851,91 @@ export function SessionCardWall() {
     persist({ ...boardState, collapsedRows });
   }
 
+  function markThreadReviewed(thread: CodexThread) {
+    const current = threadsRef.current.find((candidate) => candidate.id === thread.id) || thread;
+    persist({
+      ...boardStateRef.current,
+      threadReviews: {
+        ...boardStateRef.current.threadReviews,
+        [thread.id]: {
+          state: "reviewed",
+          activityAt: Math.max(activityTime(current), Math.floor(Date.now() / 1000)),
+        },
+      },
+    });
+    toast("会话已标记为已审阅");
+    pendingMessageThreadRef.current = "";
+    setPendingUserMessages([]);
+    setPreviewThread(null);
+  }
+
+  async function sendMessageToThread() {
+    const thread = previewThread;
+    const message = messageDraft.trim();
+    if (!thread || !message || messageSending) return;
+    setMessageSending(true);
+    setMessageError("");
+    try {
+      const params = new URLSearchParams({ thread_id: thread.id });
+      if (selectedModel) params.set("model", selectedModel);
+      if (selectedReasoningEffort) params.set("reasoning_effort", selectedReasoningEffort);
+      const response = await fetch(`${THREAD_SEND_URL}?${params.toString()}`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=UTF-8" },
+        body: message,
+      });
+      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+      const result = (await response.json()) as {
+        message_id?: string;
+        turn_id?: string;
+        state?: "started" | "queued";
+      };
+      if (!result.message_id || !["started", "queued"].includes(result.state || "")) {
+        throw new Error("Codex 没有确认收到这条消息");
+      }
+      if (result.state === "started" && !result.turn_id) {
+        throw new Error("Codex 没有启动这条消息");
+      }
+      const messageID = result.message_id;
+      setPendingUserMessages((current) => [
+        ...current,
+        { id: messageID, kind: "user", text: message },
+      ]);
+      setMessageDraft("");
+      if (result.state === "started") {
+        setMessageReceipt({threadId: thread.id, turnId: result.turn_id!, messageId: messageID, text: "Codex 已接收并启动本轮，等待 AI 输出…"});
+        const nextThread = { ...thread, status: "active" };
+        const nextThreads = threadsRef.current.map((candidate) => candidate.id === thread.id ? nextThread : candidate);
+        threadsRef.current = nextThreads;
+        setThreads(nextThreads);
+        setPreviewThread(nextThread);
+        toast.success("Codex 已收到消息并开始处理");
+      } else if (result.state === "queued") {
+        setMessageReceipt({threadId:thread.id,turnId:"",messageId:messageID,text:"Codex 已确认排队，尚未开始处理"});
+        toast("消息已排队，将在当前任务结束后处理");
+      }
+    } catch (cause) {
+      setMessageError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMessageSending(false);
+    }
+  }
+
+  async function stopThreadMessage() {
+    if (!previewThread || messageStopping) return;
+    const threadId = previewThread.id;
+    setMessageStopping(true);
+    setMessageError("");
+    try {
+      const response = await fetch(`${THREAD_SEND_URL}?action=stop&thread_id=${encodeURIComponent(threadId)}`, {method: "POST"});
+      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+      setMessageReceipt((receipt) => receipt?.threadId === threadId ? {...receipt, text: "Codex 已接受停止请求，等待本轮结束"} : receipt);
+      toast("停止请求已确认");
+    } catch (cause) {
+      setMessageError(cause instanceof Error ? cause.message : String(cause));
+    } finally { setMessageStopping(false); }
+  }
+
   async function openThread(thread: CodexThread) {
     setError("");
     try {
@@ -429,6 +947,30 @@ export function SessionCardWall() {
       if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  async function restoreThread(thread: CodexThread) {
+    if (restoringThreadId) return;
+    setRestoringThreadId(thread.id);
+    try {
+      const response = await fetch(
+        `${THREAD_RESTORE_URL}?thread_id=${encodeURIComponent(thread.id)}`,
+        { method: "POST" },
+      );
+      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+      await refreshThreads();
+      if (threadsRef.current.some((candidate) => candidate.id === thread.id)) {
+        toast.success("Codex 任务已恢复");
+      } else {
+        toast.warning("任务已取消归档，但原工作树可能已被清理；卡片会继续保留");
+      }
+    } catch (cause) {
+      toast.error("无法恢复 Codex 任务", {
+        description: cause instanceof Error ? cause.message : String(cause),
+      });
+    } finally {
+      setRestoringThreadId("");
     }
   }
 
@@ -463,6 +1005,8 @@ export function SessionCardWall() {
       hiddenThreads: boardState.hiddenThreads,
       collapsedThreads: boardState.collapsedThreads,
       collapsedRows: boardState.collapsedRows,
+      threadReviews: boardState.threadReviews,
+      threadSnapshots: boardState.threadSnapshots,
     });
     setActiveProjectId(project.id);
     setDialogOpen(false);
@@ -500,7 +1044,7 @@ export function SessionCardWall() {
           ))}
         </nav>
         <div className="mt-auto rounded-lg border border-surface-border bg-surface-hover/45 p-3 text-caption leading-5 text-muted-foreground">
-          项目由 Codex 工作目录识别。会话标题中第一个 “-” 前的文字决定 Agent 行。
+          项目由 Codex 工作目录识别。会话标题中 “ · ” 前的角色决定 Agent 行。
         </div>
       </aside>
 
@@ -550,10 +1094,14 @@ export function SessionCardWall() {
               query={deferredQuery}
               collapsed={Boolean(board.project && boardState.collapsedRows[rowStateKey(board.project.id, row.id)])}
               collapsedThreads={boardState.collapsedThreads}
+              reviewStates={boardState.threadReviews}
               onToggleCollapsed={() => toggleRowCollapsed(row.id)}
               onToggleThread={toggleThreadCollapsed}
+              onPreview={setPreviewThread}
               onOpen={(thread) => void openThread(thread)}
               onDelete={hideSession}
+              onRestore={(thread) => void restoreThread(thread)}
+              restoringThreadId={restoringThreadId}
             />
           ))}
           <UnassignedSection
@@ -561,19 +1109,211 @@ export function SessionCardWall() {
             query={deferredQuery}
             collapsed={Boolean(board.project && boardState.collapsedRows[rowStateKey(board.project.id, UNASSIGNED_ROW_ID)])}
             collapsedThreads={boardState.collapsedThreads}
+            reviewStates={boardState.threadReviews}
             onToggleCollapsed={() => toggleRowCollapsed(UNASSIGNED_ROW_ID)}
             onToggleThread={toggleThreadCollapsed}
+            onPreview={setPreviewThread}
             onOpen={(thread) => void openThread(thread)}
             onDelete={hideSession}
+            onRestore={(thread) => void restoreThread(thread)}
+            restoringThreadId={restoringThreadId}
           />
         </div>
       </main>
+
+      <Dialog
+        open={Boolean(previewThread)}
+        onOpenChange={(open) => {
+          if (!open) {
+            pendingMessageThreadRef.current = "";
+            setPendingUserMessages([]);
+            setPreviewThread(null);
+          }
+        }}
+      >
+        <DialogContent className="flex h-[80dvh] w-[min(92vw,960px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+          <DialogHeader className="border-b border-surface-border px-5 py-4 pr-14">
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <DialogTitle className="truncate">
+                  {previewThread?.name || previewThread?.preview || "未命名会话"}
+                </DialogTitle>
+                <DialogDescription className="mt-1 truncate text-caption">
+                  {previewThread?.cwd || "本地 Codex 会话"}
+                </DialogDescription>
+              </div>
+              <ThreadStatusBadge
+                status={previewStatus}
+                compact={false}
+                inline
+              />
+            </div>
+          </DialogHeader>
+
+          <div
+            ref={transcriptScrollRef}
+            onScroll={(event) => {
+              const element = event.currentTarget;
+              followTranscriptRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 96;
+            }}
+            className="min-h-0 flex-1 overflow-y-auto bg-background/55 p-4"
+            aria-live="polite"
+          >
+            {transcriptLoading && !transcript && displayedTranscriptItems.length === 0 ? (
+              <div className="grid h-full min-h-64 place-items-center text-caption text-muted-foreground">
+                <span className="flex items-center gap-2"><Loader2 className="size-4 animate-spin" />正在读取会话</span>
+              </div>
+            ) : transcriptError && !transcript && displayedTranscriptItems.length === 0 ? (
+              <div className="rounded-lg border border-destructive/25 bg-destructive/6 p-3 text-caption text-destructive">
+                {transcriptError}
+              </div>
+            ) : displayedTranscriptItems.length ? (
+              <div className="space-y-3">
+                {displayedTranscriptItems.map((item) => <TranscriptItem key={item.id} item={item} />)}
+              </div>
+            ) : (
+              <div className="grid h-full min-h-64 place-items-center text-caption text-muted-foreground">暂无可显示的对话内容</div>
+            )}
+          </div>
+
+          <form
+            className="border-t border-surface-border bg-surface-raised px-5 py-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void sendMessageToThread();
+            }}
+          >
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              {modelsLoading ? (
+                <span className="flex items-center gap-1.5 text-caption text-muted-foreground">
+                  <Loader2 className="size-3.5 animate-spin" /> 正在读取 Codex 模型
+                </span>
+              ) : codexModels.length ? (
+                <>
+                  <span className="flex items-center gap-1 text-caption text-muted-foreground">
+                    <Bot className="size-3.5" /> 模型
+                  </span>
+                  <Select
+                    items={modelItems}
+                    value={selectedModel}
+                    onValueChange={(value) => {
+                      if (!value) return;
+                      const model = codexModels.find((candidate) => candidate.id === value);
+                      setSelectedModel(value);
+                      if (!model) return;
+                      const effort = model.reasoning_efforts.some(
+                        (candidate) => candidate.value === selectedReasoningEffort,
+                      )
+                        ? selectedReasoningEffort
+                        : model.default_reasoning_effort || model.reasoning_efforts[0]?.value || "";
+                      setSelectedReasoningEffort(effort);
+                    }}
+                    disabled={messageSending}
+                  >
+                    <SelectTrigger
+                      size="sm"
+                      className="w-48 max-w-[45vw]"
+                      aria-label="选择 Codex 模型"
+                      title={selectedModelDetails?.description}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent align="start">
+                      {codexModels.map((model) => (
+                        <SelectItem key={model.id} value={model.id} title={model.description}>
+                          {model.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+
+                  <span className="ml-1 flex items-center gap-1 text-caption text-muted-foreground">
+                    <Brain className="size-3.5" /> 推理
+                  </span>
+                  <Select
+                    items={reasoningItems}
+                    value={selectedReasoningEffort}
+                    onValueChange={(value) => value && setSelectedReasoningEffort(value)}
+                    disabled={messageSending || reasoningItems.length === 0}
+                  >
+                    <SelectTrigger size="sm" className="w-24" aria-label="选择推理程度">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent align="start">
+                      {(selectedModelDetails?.reasoning_efforts || []).map((effort) => (
+                        <SelectItem key={effort.value} value={effort.value} title={effort.description}>
+                          {reasoningLabel(effort.value)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </>
+              ) : (
+                <span className="text-caption text-muted-foreground" title={modelsError}>
+                  未读取到本地 Codex 模型，将沿用任务当前设置
+                </span>
+              )}
+            </div>
+            <div className="flex items-end gap-2">
+              <Textarea
+                aria-label="发送消息到 Codex"
+                value={messageDraft}
+                onChange={(event) => setMessageDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                disabled={messageSending}
+                className="min-h-20 max-h-40 resize-y"
+                placeholder="直接给这个 Codex 任务发送消息…"
+              />
+              <Button
+                type="submit"
+                variant="brand"
+                disabled={!messageDraft.trim() || messageSending}
+              >
+                {messageSending ? <Loader2 className="animate-spin" /> : <SendHorizontal />}
+                {messageSending ? "发送中" : "发送"}
+              </Button>
+              <Button type="button" variant="outline" disabled={messageStopping || messageSending} onClick={() => void stopThreadMessage()}>
+                {messageStopping ? "停止中…" : "停止"}
+              </Button>
+            </div>
+            <p role="status" aria-live="polite" className="mt-2 text-caption text-muted-foreground">
+              {messageSending ? "正在发送，等待 Codex 确认接收…" : messageReceipt?.threadId === previewThread?.id ? messageReceipt?.text : ""}
+              {transcriptError ? " 输出连接暂时中断，正在重试；当前处理状态尚未确认。" : ""}
+            </p>
+            {messageError ? <p className="mt-2 text-caption text-destructive">{messageError}</p> : null}
+            <p className="mt-2 text-micro text-muted-foreground">
+              {previewStatus === "active"
+                ? "当前任务正在处理，新消息会加入队列。"
+                : "Enter 发送，Shift+Enter 换行；所选模型与推理程度用于下一轮。"}
+            </p>
+          </form>
+
+          <div className="flex items-center justify-between border-t border-surface-border bg-surface-hover/70 px-5 py-3">
+            <span className="text-micro text-muted-foreground">最近 20 轮；进行中时约每半秒更新</span>
+            <div className="flex items-center gap-2">
+              {previewThread && previewStatus === "pending" ? (
+                <Button variant="brand" onClick={() => markThreadReviewed(previewThread)}>
+                  <BadgeCheck /> 标记为已审阅
+                </Button>
+              ) : null}
+              <Button variant="outline" onClick={() => previewThread && void openThread(previewThread)}>
+                <ArrowUpRight /> 在 Codex 中打开
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>项目名称与 Agent 行</DialogTitle>
-            <DialogDescription>项目目录由 Codex 自动识别。会话标题以 “角色-内容” 命名时，会自动进入对应 Agent 行；无法匹配的会话进入底部列表。</DialogDescription>
+            <DialogDescription>项目目录由 Codex 自动识别。会话标题以 “角色 · 功能” 命名时，会自动进入对应 Agent 行；无法匹配的会话进入底部列表。</DialogDescription>
           </DialogHeader>
           <label className="space-y-1.5 text-caption font-medium">
             <span>项目名称</span>
@@ -585,7 +1325,7 @@ export function SessionCardWall() {
               value={draftAgents}
               onChange={(event) => setDraftAgents(event.target.value)}
               className="min-h-44 w-full resize-y rounded-lg border border-input bg-background p-2.5 text-body outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-              placeholder={"Leader Agent\nMethods Agent\nAnalysis Agent\nWriting Agent\nReviewer Agent"}
+              placeholder={"Router Agent\nDomain Agent\nMethods Agent\nImplementation Agent\nVisualization Agent\nWriting Agent\nReviewer Agent"}
             />
           </label>
           <DialogFooter>
