@@ -2360,7 +2360,11 @@ func codexSendMessageHandler(
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		if result.MessageID == "" || (result.State != "started" && result.State != "queued") || (result.State == "started" && result.TurnID == "") {
+		validState := result.State == "started" || result.State == "queued"
+		if r.URL.Query().Get("action") == "client-send" {
+			validState = validState || result.State == "submitted" || result.State == "unknown" || result.State == "completed" || result.State == "interrupted" || result.State == "failed"
+		}
+		if result.MessageID == "" || !validState || (result.State == "started" && result.TurnID == "") {
 			http.Error(w, "Codex did not confirm the message", http.StatusServiceUnavailable)
 			return
 		}
@@ -2374,7 +2378,14 @@ func codexSendMessageHandler(
 func NewCodexSendMessageHandler(executable string) http.Handler {
 	session := newCodexMessageSession(executable)
 	send := codexSendMessageHandler(session.sendMessage)
+	clientSend := codexClientFallbackHandler(func(method string, params any) (json.RawMessage, error) {
+		return sharedDesktopCall(executable, method, params)
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Query().Get("action"), "client-") {
+			clientSend.ServeHTTP(w, r)
+			return
+		}
 		if r.URL.Query().Get("action") != "stop" {
 			send.ServeHTTP(w, r)
 			return
