@@ -274,7 +274,7 @@ func TestListCodexCatalogFromSQLiteKeepsRestoredNamedTaskWithMissingWorktree(t *
 INSERT INTO threads VALUES
   ('direct-live', 'implementation · 05', '', NULL, '` + root + `', '',
    'https://github.com/example/asd.git', 'gpt', 'high', 1, 2, 3, '', '', 'appServer', 0, 0),
-  ('restored-live', 'method · 1.3.3', '', '', '/missing/worktree/V1', '',
+  ('restored-live', NULL, 'Read your skills', '', '/missing/worktree/V1', '',
    'https://github.com/example/asd.git', 'gpt', 'high', 1, 2, 4, '', '', 'appServer', 0, 0),
   ('unnamed-live', NULL, '', '内部任务', '/missing/worktree/V1', '',
    'https://github.com/example/asd.git', 'gpt', 'high', 1, 2, 5, '', '', 'appServer', 0, 0),
@@ -284,6 +284,13 @@ INSERT INTO threads VALUES
 		t.Fatalf("prepare Codex catalog database: %v: %s", err, output)
 	}
 
+	index := `{"id":"restored-live","thread_name":"method · 05","updated_at":"2026-09-09T00:00:00Z"}
+{"id":"restored-live","thread_name":"old name","updated_at":"2026-09-08T00:00:00Z"}
+{"id":"direct-live","thread_name":"stale name","updated_at":"2026-09-09T00:00:00Z"}
+{"id":`
+	if err := os.WriteFile(filepath.Join(codexHome, "session_index.jsonl"), []byte(index), 0600); err != nil {
+		t.Fatal(err)
+	}
 	catalog, err := listCodexCatalogFromSQLite(context.Background(), codexHome, []CodexProjectSummary{{
 		ID: "asd", Name: "AI+ASD", Roots: []string{root},
 	}})
@@ -292,6 +299,9 @@ INSERT INTO threads VALUES
 	}
 	if len(catalog.Threads) != 2 || catalog.Threads[0].ID != "restored-live" || catalog.Threads[1].ID != "direct-live" {
 		t.Fatalf("active threads = %#v", catalog.Threads)
+	}
+	if catalog.Threads[0].Name != "method · 05" || catalog.Threads[1].Name != "implementation · 05" {
+		t.Fatalf("catalog names = %+v", catalog.Threads)
 	}
 	if len(catalog.ArchivedThreads) != 1 || catalog.ArchivedThreads[0].ID != "archived-card" {
 		t.Fatalf("archived threads = %#v", catalog.ArchivedThreads)

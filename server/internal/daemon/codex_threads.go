@@ -877,6 +877,9 @@ func selectedProjectRoot(ctx context.Context, cwd string, projects []CodexProjec
 	}
 	worktreeRoot := projectRootFromWorktreeMetadata(cwd)
 	if worktreeRoot == "" {
+		if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+			return ""
+		}
 		gitContext, cancel := context.WithTimeout(ctx, time.Second)
 		defer cancel()
 		output, err := exec.CommandContext(gitContext, "git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
@@ -1483,10 +1486,39 @@ ORDER BY recency_at DESC, id DESC;`
 	return threads, nil
 }
 
-// listCodexCatalogFromSQLite reads the same local Codex state used by
-// thread/list. It avoids starting an app-server for the focused Session Wall
-// route; if the local schema or sqlite3 binary is unavailable, the caller
-// falls back to the protocol client below.
+// Desktop names can be indexed before they are populated in SQLite.
+func backfillCodexIndexedNames(codexHome string, rows []codexSQLiteThread) {
+	file, err := os.Open(filepath.Join(codexHome, "session_index.jsonl"))
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	type entry struct {
+		ID        string    `json:"id"`
+		Name      string    `json:"thread_name"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	names := make(map[string]entry)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), 1024*1024)
+	for scanner.Scan() {
+		var item entry
+		if json.Unmarshal(scanner.Bytes(), &item) != nil || strings.TrimSpace(item.Name) == "" {
+			continue
+		}
+		if previous, exists := names[item.ID]; !exists || !item.UpdatedAt.Before(previous.UpdatedAt) {
+			names[item.ID] = item
+		}
+	}
+	for i := range rows {
+		if strings.TrimSpace(rows[i].Name) == "" {
+			rows[i].Name = strings.TrimSpace(names[rows[i].ID].Name)
+		}
+	}
+}
+
+// listCodexCatalogFromSQLite avoids starting an app-server for the focused
+// Session Wall route; unavailable SQLite schemas fall back to the protocol client.
 func listCodexCatalogFromSQLite(ctx context.Context, codexHome string, projects []CodexProjectSummary) (CodexCatalog, error) {
 	codexHome = strings.TrimSpace(codexHome)
 	if codexHome == "" || len(projects) == 0 {
@@ -1509,6 +1541,7 @@ ORDER BY recency_at DESC, id DESC;`
 		return CodexCatalog{}, fmt.Errorf("decode Codex SQLite catalog: %w", err)
 	}
 	statuses, _ := listCodexThreadStatusesFromSQLite(ctx, codexHome)
+	backfillCodexIndexedNames(codexHome, rows)
 	threads := make([]CodexThreadSummary, 0, len(rows))
 	rootByCWD := make(map[string]string)
 	rootByOrigin := make(map[string]string)
