@@ -1,7 +1,7 @@
 'use strict';
 
-const {randomUUID, randomBytes, createHash, timingSafeEqual} = require('node:crypto');
-const {runController, findNode, actionFor} = require('./native-ui-driver.cjs');
+const {randomUUID} = require('node:crypto');
+const {runController, findNode} = require('./native-ui-driver.cjs');
 const {prepareDraft} = require('./native-ui-workflow.cjs');
 const database = require('./native-ui-receipts.cjs');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -33,7 +33,7 @@ function createNativeChat(deps = {}) {
   async function refresh(receipt) {
     if (receipt.after == null) return receipt;
     const found = await data.findReceipt(receipt.thread_id,receipt.message,receipt.after);
-    if (found) { Object.assign(receipt,found); delete receipt.error; }
+    if (found) Object.assign(receipt,found);
     else if (Date.now()-receipt.created_at > 120000 && receipt.state === 'submitted') {
       receipt.state='unknown'; receipt.error='未找到正式接收记录，请查看客户端后决定是否重试';
     }
@@ -48,9 +48,9 @@ function createNativeChat(deps = {}) {
     const turn=await data.readLatestTurn(threadId);
     if (!turn || turn.state!=='started') return {stopped:false};
     const input=editor(snapshot);
-    const stopButton=findNode(snapshot,n=>inComposer(n,input)&&n.role==='AXButton'&&n.description==='停止'&&n.enabled);
+    findNode(snapshot,n=>inComposer(n,input)&&n.role==='AXButton'&&n.description==='停止'&&n.enabled);
     if(snapshot.nodes.some(n=>n.role==='AXMenuItem'||n.role==='AXComboBox'))throw new Error('客户端有打开的菜单，请先关闭菜单再停止');
-    await call([actionFor(stopButton,'press')]);
+    await call([{op:'key',key:53}]);
     for(let n=0;n<30;n++) {
       const current=await data.readLatestTurn(threadId);
       if(current?.turn_id===turn.turn_id && current.state==='interrupted')return {stopped:true,turn_id:turn.turn_id};
@@ -64,7 +64,6 @@ function createNativeChat(deps = {}) {
     const {threadId,message}=params;
     if(typeof message!=='string'||!message.trim()||Buffer.byteLength(message)>16384)throw new Error('消息不能为空或超过长度限制');
     const settings=await data.readThreadSettings(threadId);
-    if(!settings)throw new Error('客户端任务不存在；消息未发送');
     if ((params.model && settings?.model!==params.model) || (params.effort && settings?.reasoning_effort!==params.effort)) {
       throw new Error('网页选择与客户端当前模型或推理程度不同。请先在客户端切换到所选设置；本条消息未发送');
     }
@@ -79,14 +78,10 @@ function createNativeChat(deps = {}) {
     try {
       const after=await call([{op:'key',key:36}]);
       if(!isEmpty(editor(after))) {
-        receipt.state='unknown';receipt.error='尚未确认客户端是否提交，文字可能仍在输入框中；请勿重复发送';
+        receipt.state='failed';receipt.error='客户端尚未提交草稿；文字仍保留在输入框中';
       } else if(['加入队列','Queue'].includes(button.description)) receipt.state='queued';
     } catch(error) { receipt.state='unknown';receipt.error=error.message; }
-    try {
-      for(let n=0;n<8&&!receipt.turn_id;n++) { await refresh(receipt);if(receipt.turn_id)break;await wait(250); }
-    } catch {
-      receipt.state='unknown';receipt.error='已尝试提交，但接收记录暂时不可读；请勿重复发送';
-    }
+    for(let n=0;n<8&&!receipt.turn_id;n++) { await refresh(receipt);if(receipt.turn_id)break;await wait(250); }
     return publicReceipt(receipt);
   }
   return {
@@ -109,19 +104,9 @@ if(require.main===module) {
   const WebSocket=require('../node_modules/ws');
   const {homedir}=require('node:os');
   const {join}=require('node:path');
-  const fs=require('node:fs');
-  const tokenPath=process.env.SESSION_WALL_UI_TOKEN_FILE||join(homedir(),'Library','Application Support','SessionWall','ui-control-token');
-  fs.mkdirSync(require('node:path').dirname(tokenPath),{recursive:true,mode:0o700});
-  try {fs.writeFileSync(tokenPath,randomBytes(32).toString('hex'),{flag:'wx',mode:0o600});} catch(e){if(e.code!=='EEXIST')throw e;}
-  const info=fs.lstatSync(tokenPath);
-  if(!info.isFile()||(info.mode&0o077))throw new Error('UI control token must be a private regular file');
-  const token=fs.readFileSync(tokenPath,'utf8').trim();
-  if(!/^[0-9a-f]{64}$/.test(token))throw new Error('Invalid UI control token');
-  const digest=value=>createHash('sha256').update(value).digest();
-  const expected=digest('Bearer '+token);
   const chat=createNativeChat();
   const server=new WebSocket.Server({host:'127.0.0.1',port:19515,maxPayload:128*1024,
-    verifyClient:({origin,req})=>!origin&&timingSafeEqual(digest(req.headers.authorization||''),expected)});
+    verifyClient:({origin})=>!origin||/^http:\/\/(127\.0\.0\.1|localhost):3000$/.test(origin)});
   server.on('connection',socket=>socket.on('message',async raw=>{
     let request;
     try {

@@ -27,7 +27,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
-import {parseNativeDelivery, nativeDeliveryText} from "./native-delivery";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -571,10 +570,6 @@ export function SessionCardWall() {
   const [messageDraft, setMessageDraft] = useState("");
   const [messageSending, setMessageSending] = useState(false);
   const [messageError, setMessageError] = useState("");
-  const [clientFallbackThread, setClientFallbackThread] = useState("");
-  const [clientReceipt, setClientReceipt] = useState<(ReturnType<typeof parseNativeDelivery> & {threadId: string; originalText: string}) | null>(null);
-  const clientPending = Boolean(clientReceipt && ["submitted", "queued", "unknown"].includes(clientReceipt.state));
-  const currentClientPending = clientPending && clientReceipt?.threadId === previewThread?.id;
   const [messageReceipt, setMessageReceipt] = useState<{threadId: string; turnId: string; messageId: string; text: string} | null>(null);
   const [messageStopping, setMessageStopping] = useState(false);
   const [restoringThreadId, setRestoringThreadId] = useState("");
@@ -874,63 +869,10 @@ export function SessionCardWall() {
     setPreviewThread(null);
   }
 
-  useEffect(() => {
-    if (!clientReceipt?.message_id) return;
-    const receipt = clientReceipt;
-    let cancelled = false;
-    let timer = 0;
-    async function poll() {
-      try {
-        const params = new URLSearchParams({action: "client-status", thread_id: receipt.threadId, message_id: receipt.message_id!});
-        const response = await fetch(`${THREAD_SEND_URL}?${params}`, {cache: "no-store"});
-        if (!response.ok) throw new Error("status unavailable");
-        const result = parseNativeDelivery(await response.json());
-        if (cancelled) return;
-        setClientReceipt({...receipt, ...result, error: result.error});
-        if (result.native_message_id && pendingMessageThreadRef.current === receipt.threadId) {
-          setMessageDraft((draft) => draft.trim() === receipt.originalText ? "" : draft);
-        }
-        if (["completed", "interrupted", "failed", "unknown"].includes(result.state)) return;
-      } catch {
-        if (!cancelled) setClientReceipt({...receipt, state: "unknown", error: "客户端接收状态暂时无法读取，请先检查客户端，勿重复发送"});
-        return;
-      }
-      if (!cancelled) timer = window.setTimeout(() => void poll(), 1500);
-    }
-    void poll();
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [clientReceipt?.message_id]);
-
-  async function sendViaClient() {
-    const thread = previewThread;
-    const message = messageDraft.trim();
-    if (!thread || thread.id !== clientFallbackThread || !message || messageSending || clientPending) return;
-    setMessageSending(true);
-    setMessageError("");
-    // Keep the draft and lock retries if the HTTP response itself is lost.
-    setMessageReceipt(null);
-    setClientReceipt({threadId: thread.id, originalText: message, state: "unknown"});
-    try {
-      const response = await fetch(`${THREAD_SEND_URL}?action=client-send&thread_id=${encodeURIComponent(thread.id)}`, {
-        method: "POST", headers: {"Content-Type": "text/plain;charset=UTF-8"}, body: message,
-      });
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(error || `HTTP ${response.status}`);
-      }
-      const result = parseNativeDelivery(await response.json());
-      if (!result.message_id) throw new Error("客户端未返回接收编号，请检查客户端后再重试");
-      setClientReceipt({...result, threadId: thread.id, originalText: message});
-      if (result.native_message_id) setMessageDraft((draft) => draft.trim() === message ? "" : draft);
-    } catch (cause) {
-      setMessageError(cause instanceof Error ? cause.message : String(cause));
-    } finally { setMessageSending(false); }
-  }
-
   async function sendMessageToThread() {
     const thread = previewThread;
     const message = messageDraft.trim();
-    if (!thread || !message || messageSending || currentClientPending) return;
+    if (!thread || !message || messageSending) return;
     setMessageSending(true);
     setMessageError("");
     try {
@@ -973,9 +915,7 @@ export function SessionCardWall() {
         toast("消息已排队，将在当前任务结束后处理");
       }
     } catch (cause) {
-      const error = cause instanceof Error ? cause.message : String(cause);
-      if (error.includes("占用了该任务的连接") || error.includes("already has an active writer")) setClientFallbackThread(thread.id);
-      setMessageError(error);
+      setMessageError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setMessageSending(false);
     }
@@ -1332,7 +1272,7 @@ export function SessionCardWall() {
               <Button
                 type="submit"
                 variant="brand"
-                disabled={!messageDraft.trim() || messageSending || currentClientPending}
+                disabled={!messageDraft.trim() || messageSending}
               >
                 {messageSending ? <Loader2 className="animate-spin" /> : <SendHorizontal />}
                 {messageSending ? "发送中" : "发送"}
@@ -1346,22 +1286,6 @@ export function SessionCardWall() {
               {transcriptError ? " 输出连接暂时中断，正在重试；当前处理状态尚未确认。" : ""}
             </p>
             {messageError ? <p className="mt-2 text-caption text-destructive">{messageError}</p> : null}
-            {clientFallbackThread === previewThread?.id ? (
-              <div className="mt-2 space-y-2">
-                <Button type="button" variant="outline" disabled={messageSending || clientPending || !messageDraft.trim()} onClick={() => void sendViaClient()}>
-                  交给客户端发送
-                </Button>
-                <p className="text-caption text-muted-foreground">通过现有 Codex 客户端提交，不抢占连接；会切换客户端当前任务，并沿用客户端模型与推理设置（不使用上方网页选择）。</p>
-              </div>
-            ) : null}
-            {clientReceipt && clientReceipt.threadId === previewThread?.id ? (
-              <div role="status" className="mt-2 text-caption text-muted-foreground">
-                {clientReceipt.error || nativeDeliveryText(clientReceipt.state)}
-                {clientReceipt.state === "unknown" && !messageSending ? (
-                  <Button type="button" variant="ghost" onClick={() => setClientReceipt(null)}>我已检查客户端，解除发送锁定</Button>
-                ) : null}
-              </div>
-            ) : null}
             <p className="mt-2 text-micro text-muted-foreground">
               {previewStatus === "active"
                 ? "当前任务正在处理，新消息会加入队列。"

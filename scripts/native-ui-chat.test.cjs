@@ -58,17 +58,7 @@ function hasKey(request, key) {
 }
 
 const hasSubmit = request => hasKey(request, 36);
-const hasStop = request => request.actions.some(action => action.op === 'press' && action.description === '停止');
-
-test('keeps a receipt and never retries submission when history readback fails',async()=>{
-  let submissions=0;
-  const chat=createNativeChat(dependencies({
-    runController:async request=>{if(hasSubmit(request)){submissions++;return snapshot({value:''});}return snapshot();},
-    database:{findReceipt:async()=>{throw new Error('temporary database error');}},
-  }));
-  const result=await chat.request('sessionWall/send',{threadId,message});
-  assert.equal(result.state,'unknown');assert.ok(result.message_id);assert.equal(submissions,1);
-});
+const hasStop = request => hasKey(request, 53);
 
 test('does not submit when the current native thread identity differs', async () => {
   const controls = [];
