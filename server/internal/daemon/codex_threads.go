@@ -806,6 +806,15 @@ func readCodexProjectSelection(filename string) ([]CodexProjectSummary, error) {
 	if err := json.Unmarshal(data, &selection); err != nil {
 		return nil, fmt.Errorf("decode Codex project selection: %w", err)
 	}
+	var mode struct {
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal(data, &mode); err != nil {
+		return nil, err
+	}
+	if mode.Source == "codex-pinned" {
+		return readCodexPinnedProjects(filepath.Join(defaultCodexHome(), ".codex-global-state.json"))
+	}
 	seen := make(map[string]bool)
 	projects := make([]CodexProjectSummary, 0, len(selection.Projects))
 	for _, project := range selection.Projects {
@@ -1691,6 +1700,9 @@ func (s *codexCatalogSession) list(ctx context.Context, projectsFile string) (Co
 		if err != nil {
 			return CodexCatalog{}, err
 		}
+		if len(selectedProjects) == 0 {
+			return CodexCatalog{Threads: []CodexThreadSummary{}, Projects: []CodexProjectSummary{}}, nil
+		}
 		if catalog, err := listCodexCatalogFromSQLite(ctx, defaultCodexHome(), selectedProjects); err == nil {
 			return catalog, nil
 		}
@@ -1961,6 +1973,9 @@ func listCodexCatalogWithProjects(ctx context.Context, executable, projectsFile 
 		if err != nil {
 			return CodexCatalog{}, err
 		}
+	}
+	if strings.TrimSpace(projectsFile) != "" && len(selectedProjects) == 0 {
+		return CodexCatalog{Threads: []CodexThreadSummary{}, Projects: []CodexProjectSummary{}}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, codexThreadListTimeout)
 	defer cancel()

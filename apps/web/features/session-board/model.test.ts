@@ -25,6 +25,13 @@ const threads: CodexThread[] = [
   { id: "t4", name: "其他项目", cwd: "/projects/other", recency_at: 5 },
 ];
 
+it("uses refreshed pinned scope even when empty and keeps empty pinned projects", () => {
+  const cached = rememberCatalogThreads([{id:"old",name:"method · 01",cwd:"/old"}], DEFAULT_BOARD_STATE);
+  expect(mergeDetectedProjects([], cached, []).projects).toEqual([]);
+  const next = mergeDetectedProjects([{id:"stale",cwd:"/old"}], cached, [{id:"new",name:"New",roots:["/new"],position:0}]);
+  expect(next.projects.map(project => project.id)).toEqual(["/new"]);
+});
+
 describe("session board model", () => {
   it("maps Codex turn states to the two visible card states", () => {
     expect(threadCardStatus("active")).toBe("active");

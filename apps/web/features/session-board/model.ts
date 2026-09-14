@@ -398,20 +398,22 @@ function inferredProjectName(cwd: string, threads: CodexThread[]): string {
 export function mergeDetectedProjects(
   sourceThreads: CodexThread[],
   sourceState: BoardState,
-  catalogProjects: CodexProject[] = [],
+  catalogProjects?: CodexProject[],
 ): BoardState {
+  const authoritativeCatalog = catalogProjects !== undefined;
+  catalogProjects = catalogProjects || [];
   const state = normalizeBoardState(sourceState);
   const catalogRoots = catalogProjects.flatMap((project) => project.roots).filter(Boolean);
   const allowedRoots = new Set(catalogRoots);
   const rememberedThreads = Object.values(state.threadSnapshots).filter((thread) => {
     const root = threadProjectPath(thread);
-    return root && (allowedRoots.size === 0 || allowedRoots.has(root));
+    return root && (!authoritativeCatalog || allowedRoots.has(root));
   });
   const detectedThreads = [...new Map(
-    [...rememberedThreads, ...sourceThreads].map((thread) => [thread.id, thread]),
+    [...rememberedThreads, ...sourceThreads.filter((thread) => !authoritativeCatalog || allowedRoots.has(threadProjectPath(thread)))].map((thread) => [thread.id, thread]),
   ).values()];
   const orderedThreads = [...detectedThreads].sort(compareThreads);
-  const detectedPaths = [...new Set(orderedThreads.map(threadProjectPath).filter(Boolean))];
+  const detectedPaths = [...new Set([...catalogRoots, ...orderedThreads.map(threadProjectPath).filter(Boolean)])];
   const catalogByRoot = new Map(catalogProjects.flatMap((project) =>
     project.roots.map((root) => [root, project] as const),
   ));
