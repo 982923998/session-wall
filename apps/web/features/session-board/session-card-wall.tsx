@@ -58,6 +58,8 @@ import { cn } from "@multica/ui/lib/utils";
 import {
   BOARD_STORAGE_KEY,
   DEFAULT_BOARD_STATE,
+  FOLLOW_TASK_MODEL,
+  messageModelOptions,
   buildProjectBoard,
   effectiveThreadStatus,
   hasThreadStatusChange,
@@ -619,8 +621,8 @@ export function SessionCardWall() {
     ...pendingUserMessages.filter((item) => !transcriptItemIDs.has(item.id)),
   ];
   const selectedModelDetails = codexModels.find((model) => model.id === selectedModel);
-  const modelItems = codexModels.map((model) => ({ value: model.id, label: model.name }));
-  const reasoningItems = (selectedModelDetails?.reasoning_efforts || []).map((effort) => ({
+  const modelItems = [{value: FOLLOW_TASK_MODEL, label: "沿用任务设置"}, ...codexModels.map((model) => ({ value: model.id, label: model.name }))];
+  const reasoningItems = selectedModel === FOLLOW_TASK_MODEL ? [{value: FOLLOW_TASK_MODEL, label: "沿用任务"}] : (selectedModelDetails?.reasoning_efforts || []).map((effort) => ({
     value: effort.value,
     label: reasoningLabel(effort.value),
   }));
@@ -744,15 +746,10 @@ export function SessionCardWall() {
       setSelectedReasoningEffort("");
       return;
     }
-    if (initializedModelThreadRef.current === previewThread.id && codexModels.some((model) => model.id === selectedModel)) return;
+    if (initializedModelThreadRef.current === previewThread.id) return;
     initializedModelThreadRef.current = previewThread.id;
-    const model = codexModels.find((candidate) => candidate.id === previewThread.model) || codexModels[0];
-    setSelectedModel(model?.id || "");
-    setSelectedReasoningEffort(
-      model?.reasoning_efforts.some((effort) => effort.value === previewThread.reasoning_effort)
-        ? previewThread.reasoning_effort || ""
-        : model?.default_reasoning_effort || model?.reasoning_efforts[0]?.value || "",
-    );
+    setSelectedModel(FOLLOW_TASK_MODEL);
+    setSelectedReasoningEffort("");
   }, [previewThread, codexModels, selectedModel]);
 
   useEffect(() => {
@@ -886,8 +883,7 @@ export function SessionCardWall() {
     setMessageError("");
     try {
       const params = new URLSearchParams({ thread_id: thread.id });
-      if (selectedModel) params.set("model", selectedModel);
-      if (selectedReasoningEffort) params.set("reasoning_effort", selectedReasoningEffort);
+      for (const [key, value] of Object.entries(messageModelOptions(selectedModel, selectedReasoningEffort))) params.set(key, value);
       const response = await fetch(`${THREAD_SEND_URL}?${params.toString()}`, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=UTF-8" },
@@ -1212,6 +1208,11 @@ export function SessionCardWall() {
                     value={selectedModel}
                     onValueChange={(value) => {
                       if (!value) return;
+                      if (value === FOLLOW_TASK_MODEL) {
+                        setSelectedModel(value);
+                        setSelectedReasoningEffort("");
+                        return;
+                      }
                       const model = codexModels.find((candidate) => candidate.id === value);
                       setSelectedModel(value);
                       if (!model) return;
@@ -1233,6 +1234,7 @@ export function SessionCardWall() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent align="start">
+                      <SelectItem value={FOLLOW_TASK_MODEL}>沿用任务设置</SelectItem>
                       {codexModels.map((model) => (
                         <SelectItem key={model.id} value={model.id} title={model.description}>
                           {model.name}
@@ -1246,14 +1248,15 @@ export function SessionCardWall() {
                   </span>
                   <Select
                     items={reasoningItems}
-                    value={selectedReasoningEffort}
+                    value={selectedModel === FOLLOW_TASK_MODEL ? FOLLOW_TASK_MODEL : selectedReasoningEffort}
                     onValueChange={(value) => value && setSelectedReasoningEffort(value)}
-                    disabled={messageSending || reasoningItems.length === 0}
+                    disabled={messageSending || selectedModel === FOLLOW_TASK_MODEL || reasoningItems.length === 0}
                   >
                     <SelectTrigger size="sm" className="w-24" aria-label="选择推理程度">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent align="start">
+                      {selectedModel === FOLLOW_TASK_MODEL ? <SelectItem value={FOLLOW_TASK_MODEL}>沿用任务</SelectItem> : null}
                       {(selectedModelDetails?.reasoning_efforts || []).map((effort) => (
                         <SelectItem key={effort.value} value={effort.value} title={effort.description}>
                           {reasoningLabel(effort.value)}
@@ -1303,7 +1306,7 @@ export function SessionCardWall() {
             <p className="mt-2 text-micro text-muted-foreground">
               {previewStatus === "active"
                 ? "当前任务正在处理，新消息会加入队列。"
-                : "Enter 发送，Shift+Enter 换行；所选模型与推理程度用于下一轮。"}
+                : selectedModel === FOLLOW_TASK_MODEL ? "Enter 发送，Shift+Enter 换行；模型与推理程度沿用任务当前设置。" : "Enter 发送，Shift+Enter 换行；所选模型与推理程度用于下一轮，客户端队列不支持覆盖设置。"}
             </p>
           </form>
 

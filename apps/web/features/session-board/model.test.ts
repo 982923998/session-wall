@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_AGENTS,
   DEFAULT_BOARD_STATE,
+  FOLLOW_TASK_MODEL,
+  messageModelOptions,
   buildProjectBoard,
   codexThreadUrl,
   effectiveThreadStatus,
@@ -26,6 +28,12 @@ const threads: CodexThread[] = [
   { id: "t6", name: "unknown-follow-up", cwd: "/projects/manuscript", recency_at: 7 },
   { id: "t4", name: "其他项目", cwd: "/projects/other", recency_at: 5 },
 ];
+
+it("does not send cached model settings in follow-task mode", () => {
+  expect(messageModelOptions(FOLLOW_TASK_MODEL, "high")).toEqual({});
+  expect(messageModelOptions("", "high")).toEqual({});
+  expect(messageModelOptions("chosen-model", "high")).toEqual({model:"chosen-model",reasoning_effort:"high"});
+});
 
 it("refreshes earlier progress and same-length edits even if the last item is unchanged", () => {
   const transcript = {thread_id:"t", status:"active", items:[{id:"a",kind:"tool" as const,text:"old"},{id:"b",kind:"assistant" as const,text:"tail"}]};

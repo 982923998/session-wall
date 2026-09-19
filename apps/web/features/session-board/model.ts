@@ -41,6 +41,13 @@ export interface CodexProject {
   roots: string[];
 }
 
+export const FOLLOW_TASK_MODEL = "__task_settings__";
+
+export function messageModelOptions(model: string, effort: string): Record<string, string> {
+  if (!model || model === FOLLOW_TASK_MODEL) return {};
+  return {model, ...(effort ? {reasoning_effort: effort} : {})};
+}
+
 export interface CodexTranscriptItem {
   id: string;
   client_id?: string;
