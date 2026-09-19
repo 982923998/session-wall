@@ -88,6 +88,7 @@ type CodexMessageOptions struct {
 }
 
 type CodexMessageResult struct {
+	Delivery        string `json:"delivery,omitempty"`
 	NativeMessageID string `json:"native_message_id,omitempty"`
 	Error           string `json:"error,omitempty"`
 	MessageID       string `json:"message_id"`
@@ -1978,8 +1979,8 @@ func (s *codexThreadMessageSession) sendMessage(
 	if err == nil && acquired {
 		return CodexMessageResult{MessageID: clientUserMessageID, TurnID: turnID, State: "started"}, nil
 	}
-	if err != nil && isCodexActiveWriterError(err) {
-		return CodexMessageResult{}, errors.New("Codex 客户端占用了该任务的连接，本条消息未发送。请在客户端结束或停止该任务后重试；输入内容已保留")
+	if isCodexActiveWriterError(err) && strings.HasPrefix(err.Error(), "resume Codex thread:") {
+		return queueViaCodexCLI(ctx, s.executor.executable, defaultCodexHome(), threadID, message, options)
 	}
 	if !acquired {
 		return CodexMessageResult{}, errors.New("该任务正在处理上一轮，本条消息未发送。请等待结束或点击停止后重试")

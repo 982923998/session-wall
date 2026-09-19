@@ -27,6 +27,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
+import { z } from "zod";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -105,6 +106,13 @@ const REASONING_LABELS: Record<string, string> = {
 function reasoningLabel(value: string): string {
   return REASONING_LABELS[value] || value;
 }
+
+const messageResultSchema = z.object({
+  message_id: z.string().min(1),
+  turn_id: z.string().optional(),
+  state: z.enum(["started", "queued"]),
+  delivery: z.string().optional(),
+}).refine(result => result.state !== "started" || Boolean(result.turn_id));
 
 function newId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
@@ -886,11 +894,7 @@ export function SessionCardWall() {
         body: message,
       });
       if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
-      const result = (await response.json()) as {
-        message_id?: string;
-        turn_id?: string;
-        state?: "started" | "queued";
-      };
+      const result = messageResultSchema.parse(await response.json());
       if (!result.message_id || !["started", "queued"].includes(result.state || "")) {
         throw new Error("Codex 没有确认收到这条消息");
       }
@@ -898,7 +902,7 @@ export function SessionCardWall() {
         throw new Error("Codex 没有启动这条消息");
       }
       const messageID = result.message_id;
-      setPendingUserMessages((current) => [
+      if (result.delivery !== "client_queue") setPendingUserMessages((current) => [
         ...current,
         { id: messageID, kind: "user", text: message },
       ]);
@@ -912,8 +916,11 @@ export function SessionCardWall() {
         setPreviewThread(nextThread);
         toast.success("Codex 已收到消息并开始处理");
       } else if (result.state === "queued") {
-        setMessageReceipt({threadId:thread.id,turnId:"",messageId:messageID,text:"Codex 已确认排队，尚未开始处理"});
-        toast("消息已排队，将在当前任务结束后处理");
+        const text = result.delivery === "client_queue"
+          ? "消息已投递到客户端队列；接收和运行进度以对话记录为准，沿用客户端模型设置"
+          : "Codex 已确认排队，尚未开始处理";
+        setMessageReceipt({threadId:thread.id,turnId:"",messageId:messageID,text});
+        toast(result.delivery === "client_queue" ? "已自动转交客户端队列，无需关闭客户端" : "消息已排队，将在当前任务结束后处理");
       }
     } catch (cause) {
       setMessageError(cause instanceof Error ? cause.message : String(cause));
