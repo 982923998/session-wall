@@ -412,6 +412,20 @@ func TestListAllCodexThreadsFollowsPagination(t *testing.T) {
 	}
 }
 
+func TestCodexTranscriptIntermediateActivity(t *testing.T) {
+	for _, tc := range []struct{ raw, kind, text string }{
+		{`{"type":"reasoning","id":"r","summary":[],"content":["private reasoning must not be displayed"]}`, "activity", "此阶段没有可显示的公开摘要。"},
+		{`{"type":"reasoning","id":"r","summary":["公开进度"],"content":["private"]}`, "activity", "公开进度"},
+		{`{"type":"mcpToolCall","id":"t","server":"test","tool":"read","status":"completed","result":{"content":[{"type":"text","text":"done"}]}}`, "tool", "done"},
+		{`{"type":"fileChange","id":"f","status":"completed","changes":[{"path":"docs/method.md","diff":"+updated"}]}`, "tool", "docs/method.md\n+updated"},
+	} {
+		item, ok := normalizeCodexTranscriptItem(json.RawMessage(tc.raw))
+		if !ok || item.Kind != tc.kind || item.Text != tc.text {
+			t.Fatalf("normalized item = %+v, ok=%v", item, ok)
+		}
+	}
+}
+
 func TestReadCodexThreadTranscriptNormalizesRecentTurns(t *testing.T) {
 	transcript, err := readCodexThreadTranscript(func(method string, params any) (json.RawMessage, error) {
 		if method != "thread/turns/list" {

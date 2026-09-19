@@ -63,6 +63,18 @@ export interface BoardAgent {
   name: string;
 }
 
+export function transcriptSignature(transcript: CodexThreadTranscript): string {
+  return JSON.stringify(transcript);
+}
+
+export function transcriptProgress(transcript: CodexThreadTranscript | null, error: string): string {
+  if (error) return "进度读取暂时中断，正在重试；当前运行状态尚未确认";
+  if (!transcript || threadCardStatus(transcript.status) !== "active") return "";
+  const last = transcript.items.at(-1);
+  if (last?.kind === "tool" && ["inProgress", "in_progress", "running"].includes(last.status || "")) return "进行中 · 正在执行工具";
+  return "进行中 · 等待新的可显示输出";
+}
+
 export interface BoardProject {
   id: string;
   name: string;

@@ -13,6 +13,8 @@ import {
   rememberCatalogThreads,
   threadCardStatus,
   threadDisplayStatus,
+  transcriptSignature,
+  transcriptProgress,
   type CodexThread,
 } from "./model";
 
@@ -24,6 +26,15 @@ const threads: CodexThread[] = [
   { id: "t6", name: "unknown-follow-up", cwd: "/projects/manuscript", recency_at: 7 },
   { id: "t4", name: "其他项目", cwd: "/projects/other", recency_at: 5 },
 ];
+
+it("refreshes earlier progress and same-length edits even if the last item is unchanged", () => {
+  const transcript = {thread_id:"t", status:"active", items:[{id:"a",kind:"tool" as const,text:"old"},{id:"b",kind:"assistant" as const,text:"tail"}]};
+  const changed = {...transcript, items:transcript.items.map(item => item.id === "a" ? {...item,text:"new"} : item)};
+  expect(transcriptSignature(changed)).not.toBe(transcriptSignature(transcript));
+  expect(transcriptProgress(transcript, "")).toContain("等待新的可显示输出");
+  expect(transcriptProgress({...transcript,status:"completed"}, "")).toBe("");
+  expect(transcriptProgress(transcript, "offline")).toContain("尚未确认");
+});
 
 it("uses refreshed pinned scope even when empty and keeps empty pinned projects", () => {
   const cached = rememberCatalogThreads([{id:"old",name:"method · 01",cwd:"/old"}], DEFAULT_BOARD_STATE);

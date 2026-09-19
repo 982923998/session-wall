@@ -635,19 +635,27 @@ type codexThreadTurnsListResult struct {
 
 func normalizeCodexTranscriptItem(raw json.RawMessage) (CodexTranscriptItem, bool) {
 	var item struct {
-		ClientID         string `json:"clientId"`
-		Type             string `json:"type"`
-		ID               string `json:"id"`
-		Text             string `json:"text"`
-		Phase            string `json:"phase"`
-		Command          string `json:"command"`
-		AggregatedOutput string `json:"aggregatedOutput"`
-		Query            string `json:"query"`
-		Status           string `json:"status"`
-		Content          []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
+		ClientID         string          `json:"clientId"`
+		Type             string          `json:"type"`
+		ID               string          `json:"id"`
+		Text             string          `json:"text"`
+		Phase            string          `json:"phase"`
+		Command          string          `json:"command"`
+		AggregatedOutput string          `json:"aggregatedOutput"`
+		Query            string          `json:"query"`
+		Status           string          `json:"status"`
+		Content          json.RawMessage `json:"content"`
+		Server           string          `json:"server"`
+		Tool             string          `json:"tool"`
+		Result           struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+		Changes []struct {
+			Path string `json:"path"`
+			Diff string `json:"diff"`
+		} `json:"changes"`
 		Summary []string `json:"summary"`
 	}
 	if err := json.Unmarshal(raw, &item); err != nil {
@@ -656,8 +664,15 @@ func normalizeCodexTranscriptItem(raw json.RawMessage) (CodexTranscriptItem, boo
 
 	switch item.Type {
 	case "userMessage":
-		parts := make([]string, 0, len(item.Content))
-		for _, content := range item.Content {
+		var contentItems []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(item.Content, &contentItems) != nil {
+			return CodexTranscriptItem{}, false
+		}
+		parts := make([]string, 0, len(contentItems))
+		for _, content := range contentItems {
 			if content.Type == "text" && strings.TrimSpace(content.Text) != "" {
 				parts = append(parts, content.Text)
 			}
@@ -677,7 +692,25 @@ func normalizeCodexTranscriptItem(raw json.RawMessage) (CodexTranscriptItem, boo
 		return CodexTranscriptItem{ID: item.ID, Kind: "tool", Title: "网页搜索：" + query, Status: item.Status}, query != ""
 	case "reasoning":
 		text := strings.TrimSpace(strings.Join(item.Summary, "\n"))
-		return CodexTranscriptItem{ID: item.ID, Kind: "activity", Title: "思考", Text: text}, text != ""
+		if text == "" {
+			text = "此阶段没有可显示的公开摘要。"
+		}
+		return CodexTranscriptItem{ID: item.ID, Kind: "activity", Title: "思考", Text: truncateRunes(text, codexTranscriptTextMax)}, true
+	case "mcpToolCall":
+		parts := make([]string, 0, len(item.Result.Content))
+		for _, content := range item.Result.Content {
+			if content.Text != "" {
+				parts = append(parts, content.Text)
+			}
+		}
+		return CodexTranscriptItem{ID: item.ID, Kind: "tool", Title: item.Server + " · " + item.Tool, Status: item.Status, Text: truncateRunes(strings.Join(parts, "\n"), codexTranscriptTextMax)}, true
+	case "fileChange":
+		paths, details := []string{}, []string{}
+		for _, change := range item.Changes {
+			paths = append(paths, change.Path)
+			details = append(details, change.Path+"\n"+change.Diff)
+		}
+		return CodexTranscriptItem{ID: item.ID, Kind: "tool", Title: truncateRunes("文件修改："+strings.Join(paths, ", "), 600), Status: item.Status, Text: truncateRunes(strings.Join(details, "\n\n"), codexTranscriptTextMax)}, true
 	default:
 		return CodexTranscriptItem{}, false
 	}

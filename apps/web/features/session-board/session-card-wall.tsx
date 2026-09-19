@@ -67,6 +67,8 @@ import {
   rememberCatalogThreads,
   threadCardStatus,
   threadDisplayStatus,
+  transcriptSignature,
+  transcriptProgress,
   type BoardAgent,
   type BoardState,
   type CodexModel,
@@ -770,8 +772,7 @@ export function SessionCardWall() {
         const payload = (await response.json()) as CodexThreadTranscript;
         const items = Array.isArray(payload.items) ? payload.items : [];
         const next = { ...payload, items };
-        const last = items.at(-1);
-        const signature = `${next.status || ""}:${items.length}:${last?.id || ""}:${last?.text?.length || 0}:${last?.status || ""}`;
+        const signature = transcriptSignature(next);
         if (!cancelled && signature !== transcriptSignatureRef.current) {
           transcriptSignatureRef.current = signature;
           setTranscript(next);
@@ -805,7 +806,7 @@ export function SessionCardWall() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [previewThread]);
+  }, [previewThread?.id]);
 
   useEffect(() => {
     if (!transcript || !followTranscriptRef.current) return;
@@ -1183,6 +1184,12 @@ export function SessionCardWall() {
               void sendMessageToThread();
             }}
           >
+            {transcriptProgress(transcript, transcriptError) ? (
+              <p role="status" className="mb-2 flex items-center gap-2 text-caption text-muted-foreground">
+                {transcriptError ? <AlertCircle className="size-4" /> : <Loader2 className="size-4 animate-spin" />}
+                {transcriptProgress(transcript, transcriptError)}
+              </p>
+            ) : null}
             <div className="mb-2 flex flex-wrap items-center gap-2">
               {modelsLoading ? (
                 <span className="flex items-center gap-1.5 text-caption text-muted-foreground">
