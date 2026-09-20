@@ -368,7 +368,9 @@ INSERT INTO thread_turns VALUES
   ('thread-1', 'new-turn', 2, 'inProgress');
 INSERT INTO thread_items VALUES
   ('thread-1', 'old-turn', 'user-1', 1, '{"type":"userMessage","id":"user-1","content":[{"type":"text","text":"开始"}]}'),
-  ('thread-1', 'new-turn', 'assistant-1', 2, '{"type":"agentMessage","id":"assistant-1","text":"正在处理","phase":"commentary"}');`
+  ('thread-1', 'new-turn', 'assistant-1', 2, '{"type":"agentMessage","id":"assistant-1","text":"正在处理","phase":"commentary"}');
+ALTER TABLE thread_turns ADD COLUMN started_at INTEGER DEFAULT 10;
+ALTER TABLE thread_items ADD COLUMN created_at_ms INTEGER DEFAULT 15000;`
 	if output, err := exec.Command("sqlite3", database, setup).CombinedOutput(); err != nil {
 		t.Fatalf("prepare transcript database: %v: %s", err, output)
 	}
@@ -379,6 +381,9 @@ INSERT INTO thread_items VALUES
 	}
 	if transcript.Status != "active" || len(transcript.Items) != 2 {
 		t.Fatalf("transcript = %+v", transcript)
+	}
+	if transcript.Items[1].TurnID != "new-turn" || transcript.Items[1].StartedAtMS != 10000 || transcript.Items[1].CreatedAtMS != 15000 {
+		t.Fatalf("missing timeline metadata: %+v", transcript.Items[1])
 	}
 	if transcript.Items[0].Kind != "user" || transcript.Items[1].Phase != "commentary" {
 		t.Fatalf("items = %+v", transcript.Items)

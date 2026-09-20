@@ -4,11 +4,52 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
+
+type ownerProbe func(context.Context, string, ...string) ([]byte, error)
+
+func desktopOwnsThread(ctx context.Context, home, threadID string) bool {
+	path := filepath.Join(home, "thread-writer-locks", threadID+".lock")
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	return probeDesktopOwner(ctx, path, func(ctx context.Context, command string, args ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, command, args...).Output()
+	})
+}
+
+func probeDesktopOwner(ctx context.Context, path string, run ownerProbe) bool {
+	output, err := run(ctx, "lsof", "-t", path)
+	if err != nil {
+		return false
+	}
+	for _, pid := range strings.Fields(string(output)) {
+		if _, err := strconv.Atoi(pid); err != nil {
+			continue
+		}
+		parent, err := run(ctx, "ps", "-p", pid, "-o", "ppid=")
+		if err != nil {
+			continue
+		}
+		ppid := strings.TrimSpace(string(parent))
+		if _, err := strconv.Atoi(ppid); err != nil {
+			continue
+		}
+		command, err := run(ctx, "ps", "-p", ppid, "-o", "comm=")
+		if err == nil && strings.TrimSpace(string(command)) == "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" {
+			return true
+		}
+	}
+	return false
+}
 
 // Queue only after resume was rejected, before any turn input was submitted.
 // The current writer consumes the official queue; we never resume it here.

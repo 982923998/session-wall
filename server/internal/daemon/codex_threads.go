@@ -104,13 +104,16 @@ type CodexThreadRestoreResult struct {
 // CodexTranscriptItem is the small, display-oriented subset of a persisted
 // Codex turn item used by the local Session Wall conversation preview.
 type CodexTranscriptItem struct {
-	ClientID string `json:"client_id,omitempty"`
-	ID       string `json:"id"`
-	Kind     string `json:"kind"`
-	Text     string `json:"text,omitempty"`
-	Title    string `json:"title,omitempty"`
-	Status   string `json:"status,omitempty"`
-	Phase    string `json:"phase,omitempty"`
+	TurnID      string `json:"turn_id,omitempty"`
+	CreatedAtMS int64  `json:"created_at_ms,omitempty"`
+	StartedAtMS int64  `json:"started_at_ms,omitempty"`
+	ClientID    string `json:"client_id,omitempty"`
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Text        string `json:"text,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Phase       string `json:"phase,omitempty"`
 }
 
 type CodexThreadTranscript struct {
@@ -1300,9 +1303,12 @@ type codexSQLiteLatestTurn struct {
 }
 
 type codexSQLiteTranscriptRow struct {
-	TurnID   string `json:"turn_id"`
-	ItemJSON string `json:"item_json"`
-	Status   string `json:"status"`
+	ItemTurnID  string `json:"item_turn_id"`
+	CreatedAtMS int64  `json:"created_at_ms"`
+	StartedAtMS int64  `json:"started_at_ms"`
+	TurnID      string `json:"turn_id"`
+	ItemJSON    string `json:"item_json"`
+	Status      string `json:"status"`
 }
 
 func defaultCodexHome() string {
@@ -1394,7 +1400,7 @@ func readCodexThreadTranscriptFromSQLite(ctx context.Context, codexHome, threadI
 	database := filepath.Join(codexHome, "thread_history_1.sqlite")
 	quotedThreadID := sqliteStringLiteral(threadID)
 	query := fmt.Sprintf(`WITH recent_turns AS (
-  SELECT turn_id, rollout_ordinal, status
+  SELECT turn_id, rollout_ordinal, status, started_at
   FROM thread_turns
   WHERE thread_id = %s
   ORDER BY rollout_ordinal DESC
@@ -1402,7 +1408,8 @@ func readCodexThreadTranscriptFromSQLite(ctx context.Context, codexHome, threadI
 ), latest_status AS (
   SELECT status FROM recent_turns ORDER BY rollout_ordinal DESC LIMIT 1
 )
-SELECT i.item_json, COALESCE((SELECT status FROM latest_status), '') AS status,
+SELECT i.item_json, i.turn_id AS item_turn_id, i.created_at_ms, COALESCE(t.started_at, 0)*1000 AS started_at_ms,
+  COALESCE((SELECT status FROM latest_status), '') AS status,
   (SELECT turn_id FROM recent_turns ORDER BY rollout_ordinal DESC LIMIT 1) AS turn_id
 FROM thread_items i
 JOIN recent_turns t ON t.turn_id = i.turn_id
@@ -1423,6 +1430,7 @@ ORDER BY i.rollout_ordinal ASC;`, quotedThreadID, codexTranscriptLimit, quotedTh
 			transcript.Status = codexCardThreadStatus(row.Status)
 		}
 		if item, ok := normalizeCodexTranscriptItem(json.RawMessage(row.ItemJSON)); ok {
+			item.TurnID, item.CreatedAtMS, item.StartedAtMS = row.ItemTurnID, row.CreatedAtMS, row.StartedAtMS
 			transcript.Items = append(transcript.Items, item)
 		}
 	}
@@ -1972,6 +1980,9 @@ func (s *codexThreadMessageSession) sendMessage(
 		return CodexMessageResult{}, err
 	}
 	clientUserMessageID := uuid.NewString()
+	if !options.Interrupt && desktopOwnsThread(ctx, defaultCodexHome(), threadID) {
+		return queueViaCodexCLI(ctx, s.executor.executable, defaultCodexHome(), threadID, message, options)
+	}
 	turnID, acquired, err := s.executor.tryStartMessage(
 		threadID, message, clientUserMessageID, options,
 		s.messageOptions, s.completeMessage,

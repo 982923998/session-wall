@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { z } from "zod";
+import {observeMessageTiming, messageTimingText, type MessageTiming} from "./message-timing";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -582,6 +583,7 @@ export function SessionCardWall() {
   const [messageDraft, setMessageDraft] = useState("");
   const [messageSending, setMessageSending] = useState(false);
   const [messageError, setMessageError] = useState("");
+  const [messageTiming, setMessageTiming] = useState<MessageTiming | null>(null);
   const [messageReceipt, setMessageReceipt] = useState<{threadId: string; turnId: string; messageId: string; text: string} | null>(null);
   const [messageStopping, setMessageStopping] = useState(false);
   const [restoringThreadId, setRestoringThreadId] = useState("");
@@ -777,6 +779,7 @@ export function SessionCardWall() {
         const payload = (await response.json()) as CodexThreadTranscript;
         const items = Array.isArray(payload.items) ? payload.items : [];
         const next = { ...payload, items };
+        if (!cancelled) setMessageTiming(current => current ? observeMessageTiming(current, next) : current);
         const signature = transcriptSignature(next);
         if (!cancelled && signature !== transcriptSignatureRef.current) {
           transcriptSignatureRef.current = signature;
@@ -879,6 +882,8 @@ export function SessionCardWall() {
     const thread = previewThread;
     const message = messageDraft.trim();
     if (!thread || !message || messageSending) return;
+    const clickedAt = Date.now();
+    setMessageTiming({threadId: thread.id, text: message, beforeIDs: (transcript?.items || []).map(item => item.id), clickedAt});
     setMessageSending(true);
     setMessageError("");
     try {
@@ -891,6 +896,7 @@ export function SessionCardWall() {
       });
       if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
       const result = messageResultSchema.parse(await response.json());
+      setMessageTiming(current => current?.clickedAt === clickedAt ? {...current, acknowledgedAt: Date.now()} : current);
       if (!result.message_id || !["started", "queued"].includes(result.state || "")) {
         throw new Error("Codex 没有确认收到这条消息");
       }
@@ -920,6 +926,7 @@ export function SessionCardWall() {
       }
     } catch (cause) {
       setMessageError(cause instanceof Error ? cause.message : String(cause));
+      setMessageTiming(current => current?.clickedAt === clickedAt ? {...current, failed:true} : current);
     } finally {
       setMessageSending(false);
     }
@@ -1303,6 +1310,11 @@ export function SessionCardWall() {
               {transcriptError ? " 输出连接暂时中断，正在重试；当前处理状态尚未确认。" : ""}
             </p>
             {messageError ? <p className="mt-2 text-caption text-destructive">{messageError}</p> : null}
+            {messageTiming && messageTiming.threadId === previewThread?.id ? (
+              <p className="mt-2 text-micro text-muted-foreground" title="本次发送计时；任务启动与首条回复使用本地 Codex 记录时间，不代表服务端首字节时间。刷新页面后清除。">
+                {messageTimingText(messageTiming)}
+              </p>
+            ) : null}
             <p className="mt-2 text-micro text-muted-foreground">
               {previewStatus === "active"
                 ? "当前任务正在处理，新消息会加入队列。"

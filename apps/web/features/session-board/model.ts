@@ -49,6 +49,10 @@ export function messageModelOptions(model: string, effort: string): Record<strin
 }
 
 export interface CodexTranscriptItem {
+
+  turn_id?: string;
+  created_at_ms?: number;
+  started_at_ms?: number;
   id: string;
   client_id?: string;
   kind: "user" | "assistant" | "tool" | "activity";
