@@ -78,6 +78,7 @@ func resolveSessionWallCodexPath(explicit string) (string, error) {
 	candidates := []string{
 		strings.TrimSpace(explicit),
 		strings.TrimSpace(os.Getenv("CODEX_CLI_PATH")),
+		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
 		"/Applications/ChatGPT.app/Contents/Resources/codex",
 	}
 	for _, candidate := range candidates {
