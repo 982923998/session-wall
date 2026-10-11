@@ -585,7 +585,6 @@ export function SessionCardWall() {
   const [messageError, setMessageError] = useState("");
   const [messageTiming, setMessageTiming] = useState<MessageTiming | null>(null);
   const [messageReceipt, setMessageReceipt] = useState<{threadId: string; turnId: string; messageId: string; text: string} | null>(null);
-  const [messageStopping, setMessageStopping] = useState(false);
   const [restoringThreadId, setRestoringThreadId] = useState("");
   const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -930,21 +929,6 @@ export function SessionCardWall() {
     } finally {
       setMessageSending(false);
     }
-  }
-
-  async function stopThreadMessage() {
-    if (!previewThread || messageStopping) return;
-    const threadId = previewThread.id;
-    setMessageStopping(true);
-    setMessageError("");
-    try {
-      const response = await fetch(`${THREAD_SEND_URL}?action=stop&thread_id=${encodeURIComponent(threadId)}`, {method: "POST"});
-      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
-      setMessageReceipt((receipt) => receipt?.threadId === threadId ? {...receipt, text: "Codex 已接受停止请求，等待本轮结束"} : receipt);
-      toast("停止请求已确认");
-    } catch (cause) {
-      setMessageError(cause instanceof Error ? cause.message : String(cause));
-    } finally { setMessageStopping(false); }
   }
 
   async function openThread(thread: CodexThread) {
@@ -1301,8 +1285,8 @@ export function SessionCardWall() {
                 {messageSending ? <Loader2 className="animate-spin" /> : <SendHorizontal />}
                 {messageSending ? "发送中" : "发送"}
               </Button>
-              <Button type="button" variant="outline" disabled={messageStopping || messageSending} onClick={() => void stopThreadMessage()}>
-                {messageStopping ? "停止中…" : "停止"}
+              <Button type="button" variant="outline" disabled={messageSending} onClick={() => previewThread && void openThread(previewThread)}>
+                在客户端停止
               </Button>
             </div>
             <p role="status" aria-live="polite" className="mt-2 text-caption text-muted-foreground">
@@ -1316,9 +1300,7 @@ export function SessionCardWall() {
               </p>
             ) : null}
             <p className="mt-2 text-micro text-muted-foreground">
-              {previewStatus === "active"
-                ? "当前任务正在处理，新消息会加入队列。"
-                : selectedModel === FOLLOW_TASK_MODEL ? "Enter 发送，Shift+Enter 换行；模型与推理程度沿用任务当前设置。" : "Enter 发送，Shift+Enter 换行；所选模型与推理程度用于下一轮，客户端队列不支持覆盖设置。"}
+              Enter 发送，Shift+Enter 换行；首次发送会在 Codex 客户端加载任务，可能切换客户端当前对话。消息由客户端执行，模型与推理程度沿用任务设置。
             </p>
           </form>
 

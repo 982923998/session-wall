@@ -2430,10 +2430,11 @@ func codexSendMessageHandler(
 	})
 }
 
-// NewCodexSendMessageHandler owns web turns and their interrupt connection.
+// NewCodexSendMessageHandler delegates all input to the official desktop writer.
 func NewCodexSendMessageHandler(executable string) http.Handler {
-	session := newCodexMessageSession(executable)
-	send := codexSendMessageHandler(session.sendMessage)
+	send := codexSendMessageHandler(func(ctx context.Context, threadID, message string, options CodexMessageOptions) (CodexMessageResult, error) {
+		return sendViaOfficialApp(ctx, executable, defaultCodexHome(), threadID, message, options)
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("action") != "stop" {
 			send.ServeHTTP(w, r)
@@ -2457,13 +2458,7 @@ func NewCodexSendMessageHandler(executable string) http.Handler {
 			http.Error(w, "invalid thread id", http.StatusBadRequest)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-		if err := session.thread(id).executor.interrupt(ctx, id); err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
+		http.Error(w, "任务由 Codex 客户端执行，请在客户端停止", http.StatusConflict)
 	})
 }
 

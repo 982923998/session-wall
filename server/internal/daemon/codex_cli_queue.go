@@ -51,8 +51,30 @@ func probeDesktopOwner(ctx context.Context, path string, run ownerProbe) bool {
 	return false
 }
 
-// Queue only after resume was rejected, before any turn input was submitted.
-// The current writer consumes the official queue; we never resume it here.
+// Load through the desktop's public task link and let its writer consume input.
+// This path never launches an independent app-server or resumes a web writer.
+func sendViaOfficialApp(ctx context.Context, executable, home, threadID, message string, options CodexMessageOptions) (CodexMessageResult, error) {
+	if options.Interrupt {
+		return CodexMessageResult{}, errors.New("任务由 Codex 客户端执行，请在客户端停止；本条消息未发送")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if !desktopOwnsThread(ctx, home, threadID) {
+		if err := openCodexThread(ctx, "codex://threads/"+threadID); err != nil {
+			return CodexMessageResult{}, err
+		}
+		for !desktopOwnsThread(ctx, home, threadID) {
+			select {
+			case <-ctx.Done():
+				return CodexMessageResult{}, errors.New("客户端尚未接管该任务，消息未投递；请检查客户端中的任务状态，输入已保留")
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}
+	return queueViaCodexCLI(ctx, executable, home, threadID, message, options)
+}
+
+// The current desktop writer consumes the official queue.
 func queueViaCodexCLI(ctx context.Context, executable, home, threadID, message string, options CodexMessageOptions) (CodexMessageResult, error) {
 	if options.Interrupt {
 		return CodexMessageResult{}, errors.New("任务由客户端管理；请在客户端停止，本条消息未发送")
