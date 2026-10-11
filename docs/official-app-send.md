@@ -20,6 +20,7 @@ separate protocol clients.
 - Previous source: `40000a1073dcf5bd41df85267bdff5e3ca4f0602`.
 - Previous Git tag: `session-wall/pre-official-app-20261011` (pushed).
 - Implementation branch: `codex/official-app-send`.
+- Verified implementation tag: `session-wall/official-app-20261011`.
 - Runtime backup: `/Users/chenmayao/Library/Application Support/SessionWall/backup-official-app.QrJiRV`.
 - The backup contains the prior executable, backend/frontend LaunchAgent plists,
   project selection configuration and a verified `source.bundle`.

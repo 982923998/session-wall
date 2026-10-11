@@ -128,11 +128,20 @@ func TestOfficialAppDoesNotQueueWithoutVerifiedDesktopOwnership(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "open"), []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	marker := filepath.Join(home, "unexpected-queue")
+	t.Setenv("CARD_QUEUE_TEST_MARKER", marker)
+	executable := filepath.Join(home, "codex")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n: > \"$CARD_QUEUE_TEST_MARKER\"\nexit 99\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, err := sendViaOfficialApp(ctx, "/nonexistent/codex", home, "01a08089-fb23-7d42-bfe5-89a968d8a56a", "hello", CodexMessageOptions{})
-	if err == nil || !strings.Contains(err.Error(), "消息未投递") {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := sendViaOfficialApp(ctx, executable, home, "01a08089-fb23-7d42-bfe5-89a968d8a56a", "hello", CodexMessageOptions{})
+	if err == nil {
+		t.Fatal("unverified ownership must fail")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("queue must not be invoked without verified desktop ownership")
 	}
 }
 
