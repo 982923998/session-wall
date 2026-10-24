@@ -81,6 +81,7 @@ type CodexModelSummary struct {
 }
 
 type CodexMessageOptions struct {
+	ImagePaths       []string       `json:"-"`
 	RouterToolConfig map[string]any `json:"-"`
 	Interrupt        bool           `json:"interrupt,omitempty"`
 	Model            string         `json:"model"`
@@ -104,16 +105,17 @@ type CodexThreadRestoreResult struct {
 // CodexTranscriptItem is the small, display-oriented subset of a persisted
 // Codex turn item used by the local Session Wall conversation preview.
 type CodexTranscriptItem struct {
-	TurnID      string `json:"turn_id,omitempty"`
-	CreatedAtMS int64  `json:"created_at_ms,omitempty"`
-	StartedAtMS int64  `json:"started_at_ms,omitempty"`
-	ClientID    string `json:"client_id,omitempty"`
-	ID          string `json:"id"`
-	Kind        string `json:"kind"`
-	Text        string `json:"text,omitempty"`
-	Title       string `json:"title,omitempty"`
-	Status      string `json:"status,omitempty"`
-	Phase       string `json:"phase,omitempty"`
+	Images      []string `json:"images,omitempty"`
+	TurnID      string   `json:"turn_id,omitempty"`
+	CreatedAtMS int64    `json:"created_at_ms,omitempty"`
+	StartedAtMS int64    `json:"started_at_ms,omitempty"`
+	ClientID    string   `json:"client_id,omitempty"`
+	ID          string   `json:"id"`
+	Kind        string   `json:"kind"`
+	Text        string   `json:"text,omitempty"`
+	Title       string   `json:"title,omitempty"`
+	Status      string   `json:"status,omitempty"`
+	Phase       string   `json:"phase,omitempty"`
 }
 
 type CodexThreadTranscript struct {
@@ -474,14 +476,19 @@ func unarchiveCodexThread(call codexCall, threadID string) (CodexThreadRestoreRe
 func queueCodexThreadMessage(
 	call codexCall,
 	threadID, message, clientUserMessageID string,
+	imagePaths ...string,
 ) (string, error) {
+	input := []map[string]any{{
+		"type":          "text",
+		"text":          message,
+		"text_elements": []any{},
+	}}
+	for _, path := range imagePaths {
+		input = append(input, map[string]any{"type": "localImage", "path": path})
+	}
 	raw, err := call("thread/queue/add", map[string]any{
-		"threadId": threadID,
-		"input": []map[string]any{{
-			"type":          "text",
-			"text":          message,
-			"text_elements": []any{},
-		}},
+		"threadId":            threadID,
+		"input":               input,
 		"clientUserMessageId": clientUserMessageID,
 	})
 	if err != nil {
@@ -671,18 +678,33 @@ func normalizeCodexTranscriptItem(raw json.RawMessage) (CodexTranscriptItem, boo
 		var contentItems []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
+			Path string `json:"path"`
 		}
 		if json.Unmarshal(item.Content, &contentItems) != nil {
 			return CodexTranscriptItem{}, false
 		}
 		parts := make([]string, 0, len(contentItems))
+		images := []string{}
+		imageCount := 0
 		for _, content := range contentItems {
 			if content.Type == "text" && strings.TrimSpace(content.Text) != "" {
 				parts = append(parts, content.Text)
 			}
+			if content.Type == "localImage" || content.Type == "image" {
+				imageCount++
+				if url := codexImageURL(content.Path); url != "" && len(images) < codexImageCountMax {
+					images = append(images, url)
+				}
+			}
 		}
 		text := strings.TrimSpace(strings.Join(parts, "\n"))
-		return CodexTranscriptItem{ID: item.ID, ClientID: item.ClientID, Kind: "user", Text: text}, text != ""
+		if text == "" && imageCount > 0 {
+			text = "（图片）"
+		}
+		if imageCount > 0 && len(images) == 0 {
+			images = codexMessageImageURLs(codexUploadsDirectory(), item.ClientID)
+		}
+		return CodexTranscriptItem{ID: item.ID, ClientID: item.ClientID, Kind: "user", Text: text, Images: images}, text != ""
 	case "agentMessage":
 		text := strings.TrimSpace(item.Text)
 		return CodexTranscriptItem{ID: item.ID, Kind: "assistant", Text: text, Phase: item.Phase}, text != ""
@@ -1408,7 +1430,10 @@ func readCodexThreadTranscriptFromSQLite(ctx context.Context, codexHome, threadI
 ), latest_status AS (
   SELECT status FROM recent_turns ORDER BY rollout_ordinal DESC LIMIT 1
 )
-SELECT i.item_json, i.turn_id AS item_turn_id, i.created_at_ms, COALESCE(t.started_at, 0)*1000 AS started_at_ms,
+SELECT CASE WHEN json_extract(i.item_json, '$.type') = 'userMessage'
+  THEN json_set(i.item_json, '$.content', json((SELECT json_group_array(json_remove(c.value, '$.url')) FROM json_each(i.item_json, '$.content') c)))
+  ELSE i.item_json END AS item_json,
+  i.turn_id AS item_turn_id, i.created_at_ms, COALESCE(t.started_at, 0)*1000 AS started_at_ms,
   COALESCE((SELECT status FROM latest_status), '') AS status,
   (SELECT turn_id FROM recent_turns ORDER BY rollout_ordinal DESC LIMIT 1) AS turn_id
 FROM thread_items i
@@ -2371,16 +2396,34 @@ func codexSendMessageHandler(
 			http.Error(w, "invalid thread id", http.StatusBadRequest)
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, codexMessageTextMax*4+1))
+		var imagePaths []string
+		var body []byte
+		var err error
+		if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
+			var message string
+			message, imagePaths, err = readCodexImageMessage(w, r, codexUploadsDirectory())
+			body = []byte(message)
+		} else {
+			body, err = io.ReadAll(io.LimitReader(r.Body, codexMessageTextMax*4+1))
+		}
 		if err != nil {
-			http.Error(w, "invalid message", http.StatusBadRequest)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		keepImages := false
+		if len(imagePaths) > 0 {
+			defer func() {
+				if !keepImages {
+					_ = os.RemoveAll(filepath.Dir(imagePaths[0]))
+				}
+			}()
 		}
 		if len(body) > codexMessageTextMax*4 {
 			http.Error(w, "message is too long", http.StatusRequestEntityTooLarge)
 			return
 		}
 		options := CodexMessageOptions{
+			ImagePaths:      imagePaths,
 			Interrupt:       r.URL.Query().Get("action") == "interrupt",
 			Model:           strings.TrimSpace(r.URL.Query().Get("model")),
 			ReasoningEffort: strings.TrimSpace(r.URL.Query().Get("reasoning_effort")),
@@ -2415,6 +2458,8 @@ func codexSendMessageHandler(
 			http.Error(w, "invalid reasoning effort", http.StatusBadRequest)
 			return
 		}
+		// Retain attachments once dispatch begins: an uncertain receipt may already be queued.
+		keepImages = true
 		result, err := send(r.Context(), threadID, message, options)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)

@@ -2,7 +2,9 @@
 
 Session Wall loads an unloaded task through `codex://threads/<id>`, verifies
 that the writer belongs to the existing desktop application, then calls the
-official `codex queue` command. The public send handler does not create a web
+official queue. Text uses `codex queue`; images use `thread/queue/add` through a
+short-lived protocol client because the CLI queue command rejects image attachments.
+The public send handler does not create a web
 executor or call `thread/resume` / `turn/start` on an independent app-server.
 The task link can change the desktop's selected conversation.
 
@@ -47,3 +49,35 @@ Both turns had only a user message and an assistant reply. The same official
 desktop backend PID 95507 held the test task writer. The Card backend had no
 execution child. Busy-task interruption and third-party-owned tasks were not
 tested; model response latency is not guaranteed by this routing change.
+
+## Images, 2026-10-24
+
+The composer accepts file selection, drag/drop and clipboard images with removable
+previews. Switching tasks clears unsent images. Text-only requests retain their
+original plain-text format; image requests use multipart form data. Failed sends
+retain the draft and previews. Supported formats are PNG, JPEG, WebP and GIF,
+limited to 6 images, 8 MiB each and 32 MiB combined.
+
+Images are stored privately under `~/Library/Application Support/SessionWall/uploads`.
+Server-generated paths are passed as `localImage` queue inputs. A private mapping
+from native client message ID to uploaded assets preserves previews after Codex
+converts its persisted input to an inline image. The HTTP image route exposes only
+these generated assets, not arbitrary local files. Files remain for delayed queue
+consumption and chat history; uncertain submissions also retain their assets.
+The protocol client only initializes and adds queue input; it never resumes a task
+or starts a turn. Actual task execution remains with the desktop writer.
+
+- Previous version tag: `session-wall/pre-images-20261024` (source `ac7183ab4`).
+- Image version tag: `session-wall/images-20261024`.
+- Branch: `codex/image-uploads`.
+- Runtime/source backup: `/Users/chenmayao/Library/Application Support/SessionWall/backup-images.e2uvMZ`.
+- Browser test: `e2e/session-board-image-uploads.spec.ts`; upload/paste/drop/removal,
+  IME confirmation, plain text, failed drafts and task switching are covered with
+  intercepted API requests.
+- Authorized live image turn: `01a16c6b-3378-7db1-8921-07e5e32cf199`, answered
+  `蓝色` for the generated blue image, without tools.
+- Authorized live plain-text turn: `01a16c6b-a8a7-7602-bec5-ec8ad0e19ff8`, answered
+  `CARD_TEXT_OK`, without tools.
+
+To roll back this increment, use the pre-images tag and its backed-up executable.
+Keep the uploads directory because native conversation history may reference it.

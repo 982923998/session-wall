@@ -53,6 +53,7 @@ var sessionWallServeCmd = &cobra.Command{
 		mux.Handle("/codex/thread-transcript", daemon.NewCodexThreadTranscriptHandler(resolved))
 		mux.Handle("/codex/models", daemon.NewCodexModelsHandler(resolved))
 		mux.Handle("/codex/thread-settings", daemon.NewCodexThreadSettingsHandler())
+		mux.Handle("/codex/attachments/", daemon.NewCodexImageHandler())
 		mux.Handle("/codex/send-message", daemon.NewCodexSendMessageHandler(resolved))
 		mux.Handle("/codex/open-thread", daemon.NewCodexOpenThreadHandler())
 		mux.Handle("/codex/restore-thread", daemon.NewCodexThreadRestoreHandler(resolved))

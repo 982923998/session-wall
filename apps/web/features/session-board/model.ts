@@ -49,6 +49,7 @@ export function messageModelOptions(model: string, effort: string): Record<strin
 }
 
 export interface CodexTranscriptItem {
+  images?: string[];
 
   turn_id?: string;
   created_at_ms?: number;

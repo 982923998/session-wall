@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type ownerProbe func(context.Context, string, ...string) ([]byte, error)
@@ -82,9 +84,27 @@ func queueViaCodexCLI(ctx context.Context, executable, home, threadID, message s
 	if err := checkQueuedModelSettings(ctx, home, threadID, options); err != nil {
 		return CodexMessageResult{}, err
 	}
+	if len(options.ImagePaths) > 0 {
+		// CLI queue rejects images. Use a short queue-protocol connection only;
+		// never load/resume the task on this connection or start a turn here.
+		session := newCodexCatalogSession(executable)
+		defer session.resetLocked()
+		if err := session.startLocked(); err != nil {
+			return CodexMessageResult{}, err
+		}
+		clientID := uuid.NewString()
+		if err := recordCodexImageMessage(codexUploadsDirectory(), clientID, options.ImagePaths); err != nil {
+			return CodexMessageResult{}, err
+		}
+		if _, err := queueCodexThreadMessage(session.client.call, threadID, message, clientID, options.ImagePaths...); err != nil {
+			return CodexMessageResult{}, err
+		}
+		return CodexMessageResult{MessageID: clientID, State: "queued", Delivery: "client_queue"}, nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, executable, "queue", "--thread", threadID, "--message", message).Output()
+	args := []string{"queue", "--thread", threadID, "--message", message}
+	output, err := exec.CommandContext(ctx, executable, args...).Output()
 	if err != nil {
 		return CodexMessageResult{}, errors.New("客户端队列投递失败或结果未确认；请先检查客户端再重试，输入已保留")
 	}

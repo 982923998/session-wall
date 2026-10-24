@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Clock3,
   FolderKanban,
+  ImagePlus,
   Loader2,
   Maximize2,
   MessageSquareText,
@@ -25,10 +26,12 @@ import {
   Settings2,
   Terminal,
   Trash2,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { z } from "zod";
 import {parseThreadSettings,fastModeLabel} from "./thread-settings";
+import {IMAGE_ACCEPT,validateImages,transferImageFiles,transcriptImageURLs} from "./image-attachments";
 import {observeMessageTiming, messageTimingText, type MessageTiming} from "./message-timing";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
@@ -211,6 +214,7 @@ function TranscriptItem({ item }: { item: CodexTranscriptItem }) {
     );
   }
   const user = item.kind === "user";
+  const imageSources=transcriptImageURLs(item.images);
   return (
     <article className={cn("flex", user ? "justify-end" : "justify-start")}>
       <div className={cn(
@@ -225,6 +229,9 @@ function TranscriptItem({ item }: { item: CodexTranscriptItem }) {
         <MemoizedMarkdown id={`${item.id}-${item.text?.length || 0}`} mode="minimal">
           {item.text || ""}
         </MemoizedMarkdown>
+        {imageSources.length ? <div className="mt-2 flex flex-wrap gap-2">{imageSources.map(src=>(
+          <a key={src} href={src} target="_blank" rel="noreferrer"><img src={src} alt="消息图片" className="max-h-56 max-w-full rounded-lg object-contain" loading="lazy" /></a>
+        ))}</div> : null}
       </div>
     </article>
   );
@@ -582,6 +589,9 @@ export function SessionCardWall() {
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptError, setTranscriptError] = useState("");
   const [messageDraft, setMessageDraft] = useState("");
+  const [draftImages,setDraftImages]=useState<{id:string;file:File;url:string}[]>([]);
+  const draftImagesRef=useRef<typeof draftImages>([]);
+  const imageInputRef=useRef<HTMLInputElement>(null);
   const [messageSending, setMessageSending] = useState(false);
   const [messageError, setMessageError] = useState("");
   const [messageTiming, setMessageTiming] = useState<MessageTiming | null>(null);
@@ -598,6 +608,31 @@ export function SessionCardWall() {
   const transcriptSignatureRef = useRef("");
   const pendingMessageThreadRef = useRef("");
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
+
+  function addImageFiles(files:File[]){
+    if(messageSending||!files.length)return;
+    const error=validateImages(files,draftImagesRef.current.map(image=>image.file));
+    if(error){setMessageError(error);return;}
+    const next=[...draftImagesRef.current,...files.map(file=>({id:newId("image"),file,url:URL.createObjectURL(file)}))];
+    draftImagesRef.current=next;
+    setDraftImages(next);
+    setMessageError("");
+  }
+
+  function removeDraftImages(ids:Set<string>){
+    for(const image of draftImagesRef.current)if(ids.has(image.id))URL.revokeObjectURL(image.url);
+    const next=draftImagesRef.current.filter(image=>!ids.has(image.id));
+    draftImagesRef.current=next;
+    setDraftImages(next);
+  }
+
+  useEffect(()=>{
+    setDraftImages([]);
+    return()=>{
+      for(const image of draftImagesRef.current)URL.revokeObjectURL(image.url);
+      draftImagesRef.current=[];
+    };
+  },[previewThread?.id]);
   const followTranscriptRef = useRef(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [draftName, setDraftName] = useState("");
@@ -905,7 +940,9 @@ export function SessionCardWall() {
 
   async function sendMessageToThread() {
     const thread = previewThread;
-    const message = messageDraft.trim();
+    const originalDraft=messageDraft;
+    const attachments=[...draftImagesRef.current];
+    const message = messageDraft.trim() || (attachments.length ? "（图片）" : "");
     if (!thread || !message || messageSending) return;
     const clickedAt = Date.now();
     setMessageTiming({threadId: thread.id, text: message, beforeIDs: (transcript?.items || []).map(item => item.id), clickedAt});
@@ -914,10 +951,12 @@ export function SessionCardWall() {
     try {
       const params = new URLSearchParams({ thread_id: thread.id });
       for (const [key, value] of Object.entries(messageModelOptions(selectedModel, selectedReasoningEffort))) params.set(key, value);
+      const form=attachments.length?new FormData():null;
+      if(form){form.append("message",message);for(const image of attachments)form.append("images",image.file,image.file.name);}
       const response = await fetch(`${THREAD_SEND_URL}?${params.toString()}`, {
         method: "POST",
-        headers: { "Content-Type": "text/plain;charset=UTF-8" },
-        body: message,
+        headers: form ? undefined : { "Content-Type": "text/plain;charset=UTF-8" },
+        body: form || message,
       });
       if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
       const result = messageResultSchema.parse(await response.json());
@@ -933,7 +972,8 @@ export function SessionCardWall() {
         ...current,
         { id: messageID, kind: "user", text: message },
       ]);
-      setMessageDraft("");
+      setMessageDraft(current=>pendingMessageThreadRef.current===thread.id&&current===originalDraft?"":current);
+      removeDraftImages(new Set(attachments.map(image=>image.id)));
       if (result.state === "started") {
         setMessageReceipt({threadId: thread.id, turnId: result.turn_id!, messageId: messageID, text: "Codex 已接收并启动本轮，等待 AI 输出…"});
         const nextThread = { ...thread, status: "active" };
@@ -1152,7 +1192,10 @@ export function SessionCardWall() {
           }
         }}
       >
-        <DialogContent className="flex h-[80dvh] w-[min(92vw,960px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+        <DialogContent className="flex h-[80dvh] w-[min(92vw,960px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
+          onDragOver={event=>{if(event.dataTransfer.types.includes("Files"))event.preventDefault();}}
+          onDrop={event=>{if(event.dataTransfer.files.length){event.preventDefault();addImageFiles(transferImageFiles(event.dataTransfer));}}}
+        >
           <DialogHeader className="border-b border-surface-border px-5 py-4 pr-14">
             <div className="flex items-start gap-3">
               <div className="min-w-0 flex-1">
@@ -1295,10 +1338,14 @@ export function SessionCardWall() {
               </Badge>
             </div>
             <div className="flex items-end gap-2">
+              <input ref={imageInputRef} type="file" accept={IMAGE_ACCEPT} multiple hidden disabled={messageSending}
+                onChange={event=>{addImageFiles(Array.from(event.currentTarget.files||[]));event.currentTarget.value="";}} />
+              <Button type="button" variant="outline" aria-label="添加图片" title="选择图片" disabled={messageSending} onClick={()=>imageInputRef.current?.click()}><ImagePlus /></Button>
               <Textarea
                 aria-label="发送消息到 Codex"
                 value={messageDraft}
                 onChange={(event) => setMessageDraft(event.target.value)}
+                onPaste={event=>{const images=transferImageFiles(event.clipboardData).filter(file=>file.type.startsWith("image/"));if(images.length){event.preventDefault();addImageFiles(images);}}}
                 onKeyDown={(event) => {
                   // Enter confirms IME composition; Safari may report only keyCode 229.
                   if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
@@ -1314,7 +1361,7 @@ export function SessionCardWall() {
               <Button
                 type="submit"
                 variant="brand"
-                disabled={!messageDraft.trim() || messageSending}
+                disabled={(!messageDraft.trim()&&!draftImages.length) || messageSending}
               >
                 {messageSending ? <Loader2 className="animate-spin" /> : <SendHorizontal />}
                 {messageSending ? "发送中" : "发送"}
@@ -1323,6 +1370,13 @@ export function SessionCardWall() {
                 在客户端停止
               </Button>
             </div>
+            {draftImages.length ? <div className="mt-2 flex gap-2 overflow-x-auto">{draftImages.map(image=>(
+              <div key={image.id} className="relative shrink-0 rounded-lg border border-surface-border p-1" title={image.file.name}>
+                <img src={image.url} alt={image.file.name} className="h-20 w-24 rounded object-contain" />
+                <Button type="button" variant="ghost" size="icon" className="absolute right-0 top-0 size-6 bg-background" aria-label={`移除图片 ${image.file.name}`} disabled={messageSending} onClick={()=>removeDraftImages(new Set([image.id]))}><X className="size-3" /></Button>
+              </div>
+            ))}</div> : null}
+            <p className="mt-1 text-micro text-muted-foreground">可选择、拖入或直接粘贴图片；最多 6 张，单张 8 MB，总计 32 MB。发送后保存在本机供 Codex 读取。</p>
             <p role="status" aria-live="polite" className="mt-2 text-caption text-muted-foreground">
               {messageSending ? "正在发送，等待 Codex 确认接收…" : messageReceipt?.threadId === previewThread?.id ? messageReceipt?.text : ""}
               {transcriptError ? " 输出连接暂时中断，正在重试；当前处理状态尚未确认。" : ""}
