@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { z } from "zod";
+import {parseThreadSettings,fastModeLabel} from "./thread-settings";
 import {observeMessageTiming, messageTimingText, type MessageTiming} from "./message-timing";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
@@ -589,6 +590,7 @@ export function SessionCardWall() {
   const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState("");
+  const [threadSettings,setThreadSettings]=useState<ReturnType<typeof parseThreadSettings>|null>(null);
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("");
   const initializedModelThreadRef = useRef("");
@@ -622,8 +624,13 @@ export function SessionCardWall() {
     ...pendingUserMessages.filter((item) => !transcriptItemIDs.has(item.id)),
   ];
   const selectedModelDetails = codexModels.find((model) => model.id === selectedModel);
-  const modelItems = [{value: FOLLOW_TASK_MODEL, label: "沿用任务设置"}, ...codexModels.map((model) => ({ value: model.id, label: model.name }))];
-  const reasoningItems = selectedModel === FOLLOW_TASK_MODEL ? [{value: FOLLOW_TASK_MODEL, label: "沿用任务"}] : (selectedModelDetails?.reasoning_efforts || []).map((effort) => ({
+  const currentSettings=threadSettings?.thread_id===previewThread?.id?threadSettings:null;
+  const currentModel=currentSettings?.model||previewThread?.model||"";
+  const currentModelName=codexModels.find(model=>model.id===currentModel)?.name||currentModel||"模型未知";
+  const currentEffort=currentSettings?.reasoning_effort||previewThread?.reasoning_effort||"";
+  const currentEffortName=currentEffort?reasoningLabel(currentEffort):"推理程度未知";
+  const modelItems = [{value: FOLLOW_TASK_MODEL, label: `${currentModelName}（当前）`}, ...codexModels.map((model) => ({ value: model.id, label: model.name }))];
+  const reasoningItems = selectedModel === FOLLOW_TASK_MODEL ? [{value: FOLLOW_TASK_MODEL, label: currentEffortName}] : (selectedModelDetails?.reasoning_efforts || []).map((effort) => ({
     value: effort.value,
     label: reasoningLabel(effort.value),
   }));
@@ -739,6 +746,25 @@ export function SessionCardWall() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
+
+  useEffect(()=>{
+    if(!previewThread)return;
+    const id=previewThread.id;
+    let cancelled=false;
+    let timer=0;
+    setThreadSettings(null);
+    async function refresh(){
+      try{
+        const response=await fetch(`http://127.0.0.1:19514/codex/thread-settings?thread_id=${encodeURIComponent(id)}`,{cache:"no-store"});
+        if(!response.ok)throw new Error("settings unavailable");
+        const settings=parseThreadSettings(await response.json());
+        if(!cancelled&&settings.thread_id===id)setThreadSettings(settings);
+      }catch{if(!cancelled)setThreadSettings(null);}
+      if(!cancelled)timer=window.setTimeout(()=>void refresh(),5000);
+    }
+    void refresh();
+    return()=>{cancelled=true;window.clearTimeout(timer);};
+  },[previewThread?.id]);
 
   useEffect(() => {
     if (!previewThread || codexModels.length === 0) {
@@ -1225,7 +1251,7 @@ export function SessionCardWall() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent align="start">
-                      <SelectItem value={FOLLOW_TASK_MODEL}>沿用任务设置</SelectItem>
+                      <SelectItem value={FOLLOW_TASK_MODEL}>{currentModelName}（当前）</SelectItem>
                       {codexModels.map((model) => (
                         <SelectItem key={model.id} value={model.id} title={model.description}>
                           {model.name}
@@ -1247,7 +1273,7 @@ export function SessionCardWall() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent align="start">
-                      {selectedModel === FOLLOW_TASK_MODEL ? <SelectItem value={FOLLOW_TASK_MODEL}>沿用任务</SelectItem> : null}
+                      {selectedModel === FOLLOW_TASK_MODEL ? <SelectItem value={FOLLOW_TASK_MODEL}>{currentEffortName}</SelectItem> : null}
                       {(selectedModelDetails?.reasoning_efforts || []).map((effort) => (
                         <SelectItem key={effort.value} value={effort.value} title={effort.description}>
                           {reasoningLabel(effort.value)}
@@ -1258,9 +1284,15 @@ export function SessionCardWall() {
                 </>
               ) : (
                 <span className="text-caption text-muted-foreground" title={modelsError}>
-                  未读取到本地 Codex 模型，将沿用任务当前设置
+                  模型列表暂时不可用
                 </span>
               )}
+            </div>
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-caption text-muted-foreground">
+              <span>当前模型：{currentModelName} · 推理：{currentEffortName}</span>
+              <Badge variant="outline" title="客户端当前服务等级配置，每 5 秒更新；未读取到明确值时显示未知。" className={cn(currentSettings?.fast_mode===true&&"border-success/25 bg-success/10 text-success")}>
+                {fastModeLabel(currentSettings?.fast_mode)}
+              </Badge>
             </div>
             <div className="flex items-end gap-2">
               <Textarea
