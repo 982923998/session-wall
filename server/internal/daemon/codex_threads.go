@@ -902,6 +902,9 @@ func readCodexProjectSelection(filename string) ([]CodexProjectSummary, error) {
 }
 
 func projectRootForThread(project CodexProjectSummary, cwd string) string {
+	if strings.TrimSpace(cwd) == "" {
+		return ""
+	}
 	cwd = filepath.Clean(strings.TrimSpace(cwd))
 	best := ""
 	for _, candidate := range project.Roots {
@@ -910,6 +913,23 @@ func projectRootForThread(project CodexProjectSummary, cwd string) string {
 			if len(root) > len(best) {
 				best = root
 			}
+		}
+	}
+	if best != "" {
+		return best
+	}
+	realCWD, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return ""
+	}
+	for _, candidate := range project.Roots {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		root := filepath.Clean(candidate)
+		realRoot, err := filepath.EvalSymlinks(root)
+		if err == nil && (realCWD == realRoot || strings.HasPrefix(realCWD, realRoot+string(filepath.Separator))) && len(root) > len(best) {
+			best = root
 		}
 	}
 	return best
@@ -934,10 +954,7 @@ func projectRootFromWorktreeMetadata(cwd string) string {
 func selectedProjectRoot(ctx context.Context, cwd string, projects []CodexProjectSummary) string {
 	for _, project := range projects {
 		if root := projectRootForThread(project, cwd); root != "" {
-			cleanCWD := filepath.Clean(cwd)
-			if cleanCWD == root || strings.HasPrefix(cleanCWD, root+string(filepath.Separator)) {
-				return root
-			}
+			return root
 		}
 	}
 	if !strings.Contains(filepath.ToSlash(cwd), "/.codex/worktrees/") {
@@ -953,9 +970,13 @@ func selectedProjectRoot(ctx context.Context, cwd string, projects []CodexProjec
 		}
 		worktreeRoot = projectRootFromGitCommonDir(string(output))
 	}
+	realWorktreeRoot, _ := filepath.EvalSymlinks(worktreeRoot)
 	for _, project := range projects {
 		for _, root := range project.Roots {
 			if filepath.Clean(root) == worktreeRoot {
+				return root
+			}
+			if realRoot, err := filepath.EvalSymlinks(root); err == nil && realWorktreeRoot != "" && realRoot == realWorktreeRoot {
 				return root
 			}
 		}

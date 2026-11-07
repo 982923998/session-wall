@@ -298,6 +298,64 @@ INSERT INTO threads VALUES
 	}
 }
 
+func TestCodexCatalogMatchesRealProjectDirectoryThroughAlias(t *testing.T) {
+	home := t.TempDir()
+	storage := filepath.Join(home, "storage")
+	root := filepath.Join(storage, "BY")
+	other := filepath.Join(home, "other", "BY")
+	for _, path := range []string{root, other, filepath.Join(root, "docs")} {
+		if err := os.MkdirAll(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	aliasParent := filepath.Join(home, "desktop")
+	if err := os.Symlink(storage, aliasParent); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(aliasParent, "BY")
+	project := CodexProjectSummary{ID: "by", Name: "BY", Roots: []string{alias}}
+	for _, path := range []string{root, filepath.Join(root, "docs"), alias} {
+		if got := selectedProjectRoot(context.Background(), path, []CodexProjectSummary{project}); got != alias {
+			t.Fatalf("cwd=%s root=%q want=%q", path, got, alias)
+		}
+	}
+	if got := selectedProjectRoot(context.Background(), other, []CodexProjectSummary{project}); got != "" {
+		t.Fatalf("unrelated BY directory matched: %s", got)
+	}
+	worktree := filepath.Join(home, ".codex", "worktrees", "one", "BY")
+	if err := os.MkdirAll(worktree, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: "+filepath.Join(root, ".git", "worktrees", "one")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectedProjectRoot(context.Background(), worktree, []CodexProjectSummary{project}); got != alias {
+		t.Fatalf("worktree root=%q want=%q", got, alias)
+	}
+	setup := `CREATE TABLE threads (
+id TEXT, name TEXT, title TEXT, preview TEXT, cwd TEXT, git_branch TEXT,
+git_origin_url TEXT, model TEXT, reasoning_effort TEXT, created_at INTEGER,
+updated_at INTEGER, recency_at INTEGER, agent_role TEXT, agent_nickname TEXT,
+source TEXT, is_pinned INTEGER, archived INTEGER);
+INSERT INTO threads VALUES
+('live','method · 01','','',` + sqliteStringLiteral(root) + `,'','','gpt','high',1,2,3,'','','vscode',0,0),
+('archived','domain · old','','',` + sqliteStringLiteral(root) + `,'','','gpt','high',1,2,3,'','','vscode',0,1),
+('other','method · other','','',` + sqliteStringLiteral(other) + `,'','','gpt','high',1,2,3,'','','vscode',0,0);`
+	if output, err := exec.Command("sqlite3", filepath.Join(home, "state_5.sqlite"), setup).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, output)
+	}
+	catalog, err := listCodexCatalogFromSQLite(context.Background(), home, []CodexProjectSummary{project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Threads) != 1 || catalog.Threads[0].ID != "live" || catalog.Threads[0].ProjectRoot != alias {
+		t.Fatalf("live=%+v", catalog.Threads)
+	}
+	if len(catalog.ArchivedThreads) != 1 || catalog.ArchivedThreads[0].ID != "archived" {
+		t.Fatalf("archived=%+v", catalog.ArchivedThreads)
+	}
+}
+
 func TestWebMessageBusyDoesNotQueue(t *testing.T) {
 	s := newCodexThreadMessageSession("/nonexistent/codex")
 	s.executor.mu.Lock()
