@@ -5,7 +5,7 @@ const other="01a08089-fb23-7d42-bfe5-89a968d8a56b";
 const png=Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jWZ0AAAAASUVORK5CYII=","base64");
 
 test("image selection, drop and paste preserve text sending and failed drafts",async({page})=>{
-  const requests:{type:string;body:Buffer|null}[]=[];
+  const requests:{type:string;body:Buffer|null;url:string}[]=[];
   let fail=false;
   await page.route("http://127.0.0.1:19514/**",async route=>{
     const request=route.request();
@@ -15,12 +15,15 @@ test("image selection, drop and paste preserve text sending and failed drafts",a
       {id,name:"writing · upload test",cwd:"/ui-image-test",project_root:"/ui-image-test"},
       {id:other,name:"writing · other test",cwd:"/ui-image-test",project_root:"/ui-image-test"},
     ]};
-    if(path==="/codex/models")payload={models:[]};
+    if(path==="/codex/models")payload={models:[
+      {id:"test-model",name:"Test model",default:true,default_reasoning_effort:"low",reasoning_efforts:[{value:"low"},{value:"high"}]},
+      {id:"other-model",name:"Other model",default:false,default_reasoning_effort:"low",reasoning_efforts:[{value:"low"}]},
+    ]};
     if(path==="/codex/thread-statuses")payload={statuses:{},archived_thread_ids:[]};
     if(path==="/codex/thread-transcript")payload={thread_id:id,status:"completed",items:[]};
     if(path==="/codex/thread-settings")payload={thread_id:id,model:"test-model",reasoning_effort:"high",fast_mode:false};
     if(path==="/codex/send-message"){
-      requests.push({type:request.headers()["content-type"]||"",body:request.postDataBuffer()});
+      requests.push({type:request.headers()["content-type"]||"",body:request.postDataBuffer(),url:request.url()});
       if(fail){await route.fulfill({status:503,body:"test delivery failure",headers:{"access-control-allow-origin":"http://127.0.0.1:3000"}});return;}
       payload={message_id:"test-receipt",state:"queued",delivery:"client_queue"};
     }
@@ -31,6 +34,9 @@ test("image selection, drop and paste preserve text sending and failed drafts",a
   const dialog=page.getByRole("dialog");
   const input=dialog.locator('input[type="file"]');
   const textarea=dialog.getByRole("textbox",{name:"发送消息到 Codex"});
+  await expect(dialog.getByLabel("当前 Codex 模型")).toBeDisabled();
+  await expect(dialog.getByLabel("当前推理程度")).toBeDisabled();
+  await expect(dialog.getByText(/当前模型：Test model · 推理：高/)).toBeVisible();
   await input.setInputFiles({name:"selected.png",mimeType:"image/png",buffer:png});
   await expect(dialog.locator("img")).toHaveCount(1);
   for(const [event,name]of [["paste","paste.png"],["drop","drop.png"]]){
@@ -61,6 +67,12 @@ test("image selection, drop and paste preserve text sending and failed drafts",a
   await expect(textarea).toHaveValue("");
   expect(requests[1]?.type).toContain("text/plain");
   expect(requests[1]?.body?.toString()).toBe("plain text");
+  for(const request of requests){
+    const params=new URL(request.url).searchParams;
+    expect(params.get("thread_id")).toBe(id);
+    expect(params.has("model")).toBe(false);
+    expect(params.has("reasoning_effort")).toBe(false);
+  }
   fail=true;
   await input.setInputFiles({name:"keep.png",mimeType:"image/png",buffer:png});
   await textarea.fill("keep me");

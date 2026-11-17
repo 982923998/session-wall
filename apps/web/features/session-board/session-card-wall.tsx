@@ -64,7 +64,6 @@ import {
   BOARD_STORAGE_KEY,
   DEFAULT_BOARD_STATE,
   FOLLOW_TASK_MODEL,
-  messageModelOptions,
   buildProjectBoard,
   effectiveThreadStatus,
   hasThreadStatusChange,
@@ -665,10 +664,7 @@ export function SessionCardWall() {
   const currentEffort=currentSettings?.reasoning_effort||previewThread?.reasoning_effort||"";
   const currentEffortName=currentEffort?reasoningLabel(currentEffort):"推理程度未知";
   const modelItems = [{value: FOLLOW_TASK_MODEL, label: `${currentModelName}（当前）`}, ...codexModels.map((model) => ({ value: model.id, label: model.name }))];
-  const reasoningItems = selectedModel === FOLLOW_TASK_MODEL ? [{value: FOLLOW_TASK_MODEL, label: currentEffortName}] : (selectedModelDetails?.reasoning_efforts || []).map((effort) => ({
-    value: effort.value,
-    label: reasoningLabel(effort.value),
-  }));
+  const reasoningItems = [{value: FOLLOW_TASK_MODEL, label: currentEffortName}];
 
   function persist(next: BoardState) {
     const normalized = normalizeBoardState(next);
@@ -950,7 +946,6 @@ export function SessionCardWall() {
     setMessageError("");
     try {
       const params = new URLSearchParams({ thread_id: thread.id });
-      for (const [key, value] of Object.entries(messageModelOptions(selectedModel, selectedReasoningEffort))) params.set(key, value);
       const form=attachments.length?new FormData():null;
       if(form){form.append("message",message);for(const image of attachments)form.append("images",image.file,image.file.name);}
       const response = await fetch(`${THREAD_SEND_URL}?${params.toString()}`, {
@@ -1265,7 +1260,7 @@ export function SessionCardWall() {
                   </span>
                   <Select
                     items={modelItems}
-                    value={selectedModel}
+                    value={FOLLOW_TASK_MODEL}
                     onValueChange={(value) => {
                       if (!value) return;
                       if (value === FOLLOW_TASK_MODEL) {
@@ -1283,13 +1278,13 @@ export function SessionCardWall() {
                         : model.default_reasoning_effort || model.reasoning_efforts[0]?.value || "";
                       setSelectedReasoningEffort(effort);
                     }}
-                    disabled={messageSending}
+                    disabled
                   >
                     <SelectTrigger
                       size="sm"
                       className="w-48 max-w-[45vw]"
-                      aria-label="选择 Codex 模型"
-                      title={selectedModelDetails?.description}
+                      aria-label="当前 Codex 模型"
+                      title="当前任务模型，请在 Codex 客户端切换"
                     >
                       <SelectValue />
                     </SelectTrigger>
@@ -1308,15 +1303,15 @@ export function SessionCardWall() {
                   </span>
                   <Select
                     items={reasoningItems}
-                    value={selectedModel === FOLLOW_TASK_MODEL ? FOLLOW_TASK_MODEL : selectedReasoningEffort}
+                    value={FOLLOW_TASK_MODEL}
                     onValueChange={(value) => value && setSelectedReasoningEffort(value)}
-                    disabled={messageSending || selectedModel === FOLLOW_TASK_MODEL || reasoningItems.length === 0}
+                    disabled
                   >
-                    <SelectTrigger size="sm" className="w-24" aria-label="选择推理程度">
+                    <SelectTrigger size="sm" className="w-24" aria-label="当前推理程度" title="请在 Codex 客户端切换推理程度">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent align="start">
-                      {selectedModel === FOLLOW_TASK_MODEL ? <SelectItem value={FOLLOW_TASK_MODEL}>{currentEffortName}</SelectItem> : null}
+                      <SelectItem value={FOLLOW_TASK_MODEL}>{currentEffortName}</SelectItem>
                       {(selectedModelDetails?.reasoning_efforts || []).map((effort) => (
                         <SelectItem key={effort.value} value={effort.value} title={effort.description}>
                           {reasoningLabel(effort.value)}
@@ -1336,6 +1331,7 @@ export function SessionCardWall() {
               <Badge variant="outline" title="客户端当前服务等级配置，每 5 秒更新；未读取到明确值时显示未知。" className={cn(currentSettings?.fast_mode===true&&"border-success/25 bg-success/10 text-success")}>
                 {fastModeLabel(currentSettings?.fast_mode)}
               </Badge>
+              <span className="text-micro">模型和推理程度请在 Codex 客户端切换，网页自动同步显示。</span>
             </div>
             <div className="flex items-end gap-2">
               <input ref={imageInputRef} type="file" accept={IMAGE_ACCEPT} multiple hidden disabled={messageSending}
